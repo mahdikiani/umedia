@@ -1,0 +1,77 @@
+name: umedia
+
+services:
+  api:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
+      DOMAIN: drive.uln.me
+      PROJECT_NAME: umedia-api
+      UMEDIA_DATA_DIR: /data
+    volumes:
+      - ./volumes/data:/data
+      - ./volumes/storage:/storage
+    networks:
+      - internal
+      - traefik-net
+    healthcheck:
+      test:
+        - CMD
+        - uv
+        - run
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-net
+      - traefik.http.routers.umedia-api.rule=Host(`drive.uln.me`) && PathPrefix(`/api`)
+      - traefik.http.routers.umedia-api.entrypoints=web
+      - traefik.http.routers.umedia-api.priority=100
+      - traefik.http.routers.umedia-api-secure.rule=Host(`drive.uln.me`) && PathPrefix(`/api`)
+      - traefik.http.routers.umedia-api-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-api-secure.priority=100
+      - traefik.http.routers.umedia-api-secure.tls=true
+      - traefik.http.routers.umedia-api-secure.tls.certresolver=letsencrypt
+      - traefik.http.services.umedia-api.loadbalancer.server.port=8000
+
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+      - traefik-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-net
+      - traefik.http.routers.umedia-web.rule=Host(`drive.uln.me`)
+      - traefik.http.routers.umedia-web.entrypoints=web
+      - traefik.http.routers.umedia-web.priority=10
+      - traefik.http.routers.umedia-web-secure.rule=Host(`drive.uln.me`)
+      - traefik.http.routers.umedia-web-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-web-secure.priority=10
+      - traefik.http.routers.umedia-web-secure.tls=true
+      - traefik.http.routers.umedia-web-secure.tls.certresolver=letsencrypt
+      - traefik.http.services.umedia-web.loadbalancer.server.port=3000
+
+networks:
+  internal:
+  traefik-net:
+    external: true
+

@@ -1,0 +1,22 @@
+{
+  "id": "s3",
+  "name": "S3 compatible",
+  "description": "AWS S3, MinIO, Backblaze B2 and compatible services.",
+  "entrypoint": ["python", "-m", "plugins.rclone.main"],
+  "process_id": "rclone",
+  "remote_type": "s3",
+  "status": "available",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    { "key": "endpoint_url", "label": "Endpoint URL", "required": false },
+    { "key": "bucket", "label": "Bucket" },
+    { "key": "region", "label": "Region", "required": false },
+    { "key": "access_key_id", "label": "Access key", "secret": true },
+    {
+      "key": "secret_access_key",
+      "label": "Secret key",
+      "input_type": "password",
+      "secret": true
+    }
+  ]
+}

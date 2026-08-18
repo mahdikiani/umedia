@@ -1,0 +1,36 @@
+uvicorn
+fastapi
+pydantic[email]
+httpx
+
+singleton_package
+json-advanced
+python-dotenv
+
+aiofiles
+aiocache
+
+beanie
+fastapi-mongo-base
+
+apscheduler
+# pytz
+# pillow
+
+# ufiles
+# ufaas
+usso[fastapi]
+
+python-multipart
+python-magic
+
+boto3
+
+# colorthief
+# cairosvg
+# numpy
+# scikit-learn
+
+# cryptography
+
+aioboto3

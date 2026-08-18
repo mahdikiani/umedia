@@ -1,0 +1,15 @@
+{
+  "id": "local",
+  "name": "Local filesystem",
+  "description": "A directory mounted into the UMedia container.",
+  "entrypoint": ["python", "-m", "plugins.local.main"],
+  "status": "available",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    {
+      "key": "root_path",
+      "label": "Root path",
+      "placeholder": "/storage/library"
+    }
+  ]
+}

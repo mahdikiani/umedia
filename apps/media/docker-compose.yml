@@ -1,0 +1,29 @@
+services:
+  app:
+    build: app
+    restart: unless-stopped
+    # command: ["python", "-m" ,"debugpy", "--listen", "0.0.0.0:3000", "-m", "main"]
+    # ports:
+    #   - 3000:3000
+    hostname: ${PROJECT_NAME}
+    env_file:
+      - .env
+    networks:
+      - traefik-net
+      - mongo-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${PROJECT_NAME}.entrypoints=web"
+      - "traefik.http.routers.${PROJECT_NAME}.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${PROJECT_NAME}-secure.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_NAME}-secure.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${PROJECT_NAME}-secure.tls=true"
+      - "traefik.http.routers.${PROJECT_NAME}-secure.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${PROJECT_NAME}.loadbalancer.server.port=8000"
+      - "traefik.docker.network=traefik-net"
+
+networks:
+  traefik-net:
+    external: true
+  mongo-net:
+    external: true

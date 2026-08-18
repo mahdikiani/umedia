@@ -1,0 +1,20 @@
+{
+  "id": "google_drive",
+  "name": "Google Drive",
+  "description": "Google Drive including Shared Drives.",
+  "entrypoint": ["python", "-m", "plugins.rclone.main"],
+  "process_id": "rclone",
+  "remote_type": "google_drive",
+  "status": "beta",
+  "connect_flow": "oauth",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    {
+      "key": "token",
+      "label": "OAuth token",
+      "input_type": "password",
+      "secret": true
+    },
+    { "key": "root_folder_id", "label": "Root folder ID", "required": false }
+  ]
+}

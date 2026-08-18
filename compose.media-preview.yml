@@ -1,0 +1,136 @@
+# Standalone joint preview deployment for apps/media (backend) + apps/web
+# (frontend), both reachable at umedia.uln.me -- separate from the `umedia`
+# compose project (name: umedia, currently deployed from a *different*
+# checkout at ~/Projects/ai/umedia, serving drive.uln.me) on purpose:
+# reusing that project name from this checkout would let `docker compose`
+# associate with -- and potentially disrupt -- those already-running
+# containers. This is a testing convenience, not the Phase 5 wiring
+# (docs/09-tasks.md); apps/api still exists and is untouched.
+#
+# Path-based routing on one domain: `/api/v1/*` (every apps/media route --
+# auth, provider-connections, resources, and the /f/{uid} public-link
+# alias are all mounted under this one prefix, see server/server.py) goes
+# to `media`; everything else goes to `web`. This is what lets apps/web's
+# relative `fetch("/api/v1/...")` calls and cookie-based auth work at all
+# -- they assume same-origin, not two separate hosts.
+name: umedia-media-preview
+
+services:
+  media:
+    build:
+      context: ./apps/media/app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
+      DOMAIN: umedia.uln.me
+      PROJECT_NAME: umedia-media-preview
+      UMEDIA_DATA_DIR: /data
+      # Without this, the `local` plugin's allowed root defaults to
+      # $UMEDIA_DATA_DIR/storage (i.e. /data/storage) -- but the
+      # `./volumes/storage:/storage` mount below is where an admin
+      # actually expects a "local" connection's files to land (it's the
+      # one mounted separately, host-visible on its own), and it's also
+      # what plugins/local/plugin.json's own `root_path` placeholder
+      # (`/storage/library`) assumes. Set explicitly so the two agree.
+      UMEDIA_LOCAL_STORAGE_ROOT: /storage
+      # fastapi_mongo_base reads these (SENTRY_DSN etc.) and calls
+      # setup_sentry() inside create_app -- no app-level Sentry code.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-preview}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+    volumes:
+      - ./volumes/data:/data
+      - ./volumes/storage:/storage
+    networks:
+      - internal
+      - traefik-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-net
+      # PathPrefix makes this rule more specific (and so higher-priority
+      # by default) than `web`'s bare Host(...) rule below -- explicit
+      # priority set anyway so that stays true regardless of rule-text
+      # length, which is Traefik's actual tiebreaker.
+      - traefik.http.routers.umedia-media-preview.rule=Host(`umedia.uln.me`) && PathPrefix(`/api/v1`)
+      - traefik.http.routers.umedia-media-preview.entrypoints=web
+      - traefik.http.routers.umedia-media-preview.priority=10
+      - traefik.http.routers.umedia-media-preview-secure.rule=Host(`umedia.uln.me`) && PathPrefix(`/api/v1`)
+      - traefik.http.routers.umedia-media-preview-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-media-preview-secure.tls=true
+      - traefik.http.routers.umedia-media-preview-secure.tls.certresolver=letsencrypt
+      - traefik.http.routers.umedia-media-preview-secure.priority=10
+      # Cyberduck lists at `/` on the website host (no /api/v1/s3). Steal
+      # those S3-shaped requests from Next.js. SigV4 signs the original
+      # path, so the app also serves the gateway at `/`.
+      - "traefik.http.routers.umedia-s3-root.rule=Host(`umedia.uln.me`) && !PathPrefix(`/api/v1`) && (HeaderRegexp(`User-Agent`, `(?i)Cyberduck`) || HeaderRegexp(`Authorization`, `AWS`))"
+      - traefik.http.routers.umedia-s3-root.entrypoints=web
+      - traefik.http.routers.umedia-s3-root.priority=20
+      - "traefik.http.routers.umedia-s3-root-secure.rule=Host(`umedia.uln.me`) && !PathPrefix(`/api/v1`) && (HeaderRegexp(`User-Agent`, `(?i)Cyberduck`) || HeaderRegexp(`Authorization`, `AWS`))"
+      - traefik.http.routers.umedia-s3-root-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-s3-root-secure.tls=true
+      - traefik.http.routers.umedia-s3-root-secure.tls.certresolver=letsencrypt
+      - traefik.http.routers.umedia-s3-root-secure.priority=20
+      # Nested S3 virtual-host (`{bucket}.umedia.uln.me`). Wildcard is
+      # DNS-only; cert is Let's Encrypt DNS-01 (`*.umedia.uln.me`).
+      - "traefik.http.routers.umedia-media-preview-vhost.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\\.uln\\.me$`)"
+      - traefik.http.routers.umedia-media-preview-vhost.entrypoints=web
+      - traefik.http.routers.umedia-media-preview-vhost.priority=10
+      - "traefik.http.routers.umedia-media-preview-vhost-secure.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\\.uln\\.me$`)"
+      - traefik.http.routers.umedia-media-preview-vhost-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-media-preview-vhost-secure.tls=true
+      - traefik.http.routers.umedia-media-preview-vhost-secure.tls.certresolver=letsencrypt-dns
+      - "traefik.http.routers.umedia-media-preview-vhost-secure.tls.domains[0].main=umedia.uln.me"
+      - "traefik.http.routers.umedia-media-preview-vhost-secure.tls.domains[0].sans=*.umedia.uln.me"
+      - traefik.http.routers.umedia-media-preview-vhost-secure.priority=10
+      - traefik.http.services.umedia-media-preview.loadbalancer.server.port=8000
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_SENTRY_DSN: ${SENTRY_DSN:-}
+        NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-preview}
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-preview}
+    restart: unless-stopped
+    networks:
+      - traefik-net
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:3000/login', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-net
+      - traefik.http.routers.umedia-web-preview.rule=Host(`umedia.uln.me`)
+      - traefik.http.routers.umedia-web-preview.entrypoints=web
+      - traefik.http.routers.umedia-web-preview.priority=1
+      - traefik.http.routers.umedia-web-preview-secure.rule=Host(`umedia.uln.me`)
+      - traefik.http.routers.umedia-web-preview-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-web-preview-secure.tls=true
+      - traefik.http.routers.umedia-web-preview-secure.tls.certresolver=letsencrypt
+      - traefik.http.routers.umedia-web-preview-secure.priority=1
+      - traefik.http.services.umedia-web-preview.loadbalancer.server.port=3000
+
+networks:
+  internal:
+  traefik-net:
+    external: true
+
