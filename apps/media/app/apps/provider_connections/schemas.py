@@ -15,6 +15,30 @@ class ProviderConnectionCreate(BaseModel):
     mirror_structure: bool = False
 
 
+class OAuthStartRequest(BaseModel):
+    provider_type: str = Field(min_length=1)
+
+
+class OAuthStartResponse(BaseModel):
+    provider_type: str
+    authorization_url: str
+    state: str
+    redirect_uri: str
+
+
+class OAuthCompleteRequest(BaseModel):
+    """Finish the localhost-redirect paste flow and create the connection."""
+
+    provider_type: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=120)
+    callback: str = Field(min_length=1)
+    # Optional when the pasted URL/query already carries `state=...`.
+    state: str | None = None
+    root_folder_id: str | None = None
+    import_existing: bool = False
+    mirror_structure: bool = False
+
+
 class ProviderConnectionUpdate(BaseModel):
     """`PATCH /providers/{uid}` -- rename, enable/disable, and/or toggle
     the dual-layer flags; not a config change (see
@@ -35,6 +59,7 @@ class ProviderConnectionResponse(BaseModel):
     import_existing: bool
     mirror_structure: bool
     created_at: datetime
+    owner_id: str | None = None
     last_tested_at: datetime | None = None
     last_error: str | None = None
 
@@ -56,11 +81,8 @@ class ProviderTypeResponse(BaseModel):
     status: str
     capabilities: list[str]
     fields: list[ProviderFieldResponse]
-    # "token" (today's single-step create-and-validate flow, unchanged),
-    # "oauth", or "session" -- which sub-flow a frontend should offer for
-    # this provider type. Purely descriptive for now: the oauth/session
-    # sub-flow *endpoints* (docs/09-tasks.md) aren't built yet, so every
-    # provider type still only supports the "token" flow in practice --
-    # this field exists so the frontend and those upcoming routes have
-    # something authoritative to read once they do exist.
+    # "token" (single-step create with config fields), "oauth" (Google
+    # Drive localhost-redirect paste flow via `/providers/oauth/start`
+    # + `/providers/oauth/complete`), or "session" (Telegram multi-step;
+    # not built yet).
     connect_flow: str

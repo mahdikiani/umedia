@@ -184,6 +184,44 @@ async def test_type_sort_groups_files_by_content_type_after_folders(
 
 
 @pytest.mark.asyncio
+async def test_size_sort_keeps_folders_first(
+    harness: Harness,
+) -> None:
+    folder = await harness.service.create_folder(
+        name="docs",
+        parent_id=None,
+        owner_id=ACTOR_ID,
+    )
+    small = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="small.txt",
+        content=b"ab",
+        owner_id=ACTOR_ID,
+    )
+    large = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="large.txt",
+        content=b"abcdefgh",
+        owner_id=ACTOR_ID,
+    )
+
+    page = await harness.service.list_children(
+        None,
+        actor_user_id=ACTOR_ID,
+        sort="size",
+        order="desc",
+    )
+
+    assert [record.uid for record in page.items] == [
+        folder.uid,
+        large.uid,
+        small.uid,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_filtered_scope_sorts_before_slicing(harness: Harness) -> None:
     # Given three shared files created in an order different from their mtimes.
     shared = []

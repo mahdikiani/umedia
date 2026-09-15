@@ -28,6 +28,13 @@ from usso.lite.models import LocalUser
 # anyway since no such route exists.
 _PUBLIC_LINK_RE = re.compile(r"^/api/v1/f/[^/]+(?:/[^/]+)?$")
 
+# Authenticated library content URLs (`/files/{uid}/content[...]`) must also
+# be reachable without a session so the *route* can apply the open matrix
+# (owner / share / workspace / public) and answer 404 on deny -- a middleware
+# 401 would confirm the path is a protected file API. Short-lived links stay
+# on `/s3/...` (SigV4). Only safe methods; mutating verbs 404 (no such route).
+_FILE_CONTENT_RE = re.compile(r"^/api/v1/files/[^/]+/content(?:/[^/]+)?$")
+
 # The S3-compatible gateway carries its *own* authentication -- every
 # request is SigV4-verified against a per-user access key inside the
 # routes' `s3_auth` dependency (apps/s3/auth.py), so the session guard
@@ -35,11 +42,19 @@ _PUBLIC_LINK_RE = re.compile(r"^/api/v1/f/[^/]+(?:/[^/]+)?$")
 # session cookie, and presigned GETs are anonymous by design.
 _S3_GATEWAY_PREFIX = "/api/v1/s3"
 
+# MIME type icons this process serves from `app/statics/`. `<img>` tags
+# (including on public share pages) must load them without a session.
+_STATICS_PREFIX = "/api/v1/statics"
+
 PUBLIC_EXACT_PATHS = {
     "/api/v1/health",
     "/api/v1/auth/state",
     "/api/v1/auth/setup",
     "/api/v1/auth/sessions",
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/oidc/start",
+    "/api/v1/auth/oidc/complete",
+    "/api/v1/auth/oidc/callback",
     # The docs page/schema, not just the auth bootstrap routes: an admin
     # has no session the first time they open the app, so if these aren't
     # public the docs page can't even fetch its own schema to render --
@@ -59,6 +74,12 @@ def _is_public(request: Request) -> bool:
         return True
     path = request.url.path
     if path == _S3_GATEWAY_PREFIX or path.startswith(_S3_GATEWAY_PREFIX + "/"):
+        return True
+    if request.method in SAFE_METHODS and (
+        path == _STATICS_PREFIX or path.startswith(_STATICS_PREFIX + "/")
+    ):
+        return True
+    if request.method in SAFE_METHODS and _FILE_CONTENT_RE.match(path):
         return True
     return (
         request.method in SAFE_METHODS

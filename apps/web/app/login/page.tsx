@@ -1,9 +1,10 @@
 "use client";
 
 import { FolderOpen, KeyRound } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
+import { GoogleOidcLogin } from "@/components/google-oidc-login";
 import { useLocale } from "@/components/locale-provider";
 import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -13,9 +14,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, api, type AuthState } from "@/lib/api";
 import { useCopy } from "@/lib/copy";
+import { readLastLocation } from "@/lib/last-location";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { locale } = useLocale();
   const text = useCopy(locale);
 
@@ -23,14 +26,16 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(
+    () => searchParams.get("oidc_error") ?? "",
+  );
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     api<AuthState>("/auth/state")
       .then((next) => {
         if (next.authenticated) {
-          router.replace("/home");
+          router.replace(readLastLocation());
         } else {
           setState(next);
         }
@@ -61,7 +66,7 @@ export default function LoginPage() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      router.replace("/home");
+      router.replace(readLastLocation());
     } catch (requestError) {
       setError(
         requestError instanceof ApiError ? requestError.message : "Unable to continue",
@@ -72,7 +77,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-background p-4">
+    <main className="grid min-h-screen place-items-center bg-muted/40 p-4">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -90,7 +95,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <Card>
+        <Card className="border border-border/80 shadow-md dark:shadow-lg dark:shadow-black/25">
           <CardHeader>
             <div className="mb-2 grid size-10 place-items-center rounded-full bg-muted">
               <KeyRound size={18} />
@@ -152,6 +157,13 @@ export default function LoginPage() {
                 {isSetup ? text.createAction : text.loginAction}
               </Button>
             </form>
+            {!isSetup && state.oidc_providers?.includes("google") && (
+              <div className="mt-4">
+                <GoogleOidcLogin
+                  onSuccess={() => router.replace(readLastLocation())}
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

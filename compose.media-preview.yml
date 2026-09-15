@@ -33,6 +33,16 @@ services:
       # what plugins/local/plugin.json's own `root_path` placeholder
       # (`/storage/library`) assumes. Set explicitly so the two agree.
       UMEDIA_LOCAL_STORAGE_ROOT: /storage
+      # How often inbound Storage→library polling walks every enabled
+      # connection. Default 900s (15 minutes). Manual Sync still runs
+      # immediately. Override from the host .env if you want a shorter tick.
+      UMEDIA_SYNC_POLL_INTERVAL_SECONDS: ${UMEDIA_SYNC_POLL_INTERVAL_SECONDS:-900}
+      # Google Drive OAuth (localhost-redirect paste flow).
+      UMEDIA_GOOGLE_OAUTH_CLIENT_ID: ${UMEDIA_GOOGLE_OAUTH_CLIENT_ID:-}
+      UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET: ${UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET:-}
+      UMEDIA_GOOGLE_OAUTH_REDIRECT_URI: ${UMEDIA_GOOGLE_OAUTH_REDIRECT_URI:-http://localhost}
+      # Identity login callback (full-page redirect). Drive OAuth keeps localhost paste.
+      UMEDIA_OIDC_REDIRECT_URI: ${UMEDIA_OIDC_REDIRECT_URI:-https://umedia.uln.me/api/v1/auth/oidc/callback}
       # fastapi_mongo_base reads these (SENTRY_DSN etc.) and calls
       # setup_sentry() inside create_app -- no app-level Sentry code.
       SENTRY_DSN: ${SENTRY_DSN:-}

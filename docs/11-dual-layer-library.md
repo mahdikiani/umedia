@@ -52,17 +52,23 @@ No user `parent_id`.
 
 `uid` (also `/f/{uid}`), `owner_id`, `permissions`, `workspace_id`,
 `type` (`file`\|`folder`\|…), `name`, `parent_id` (library tree only),
+`provider_connection_id` (folders are bound to one storage; files may
+denormalize the same from the primary StorageObject),
 `public_permission`, `access_at`, `deleted_at`, `status`, `error`,
 `history` JSON (version snapshots of linked storage when content
 replaced). Per-user **stars** live in `media_file_stars`
 (`user_id` + `media_file_id`), not as a column on `media_files`.
 
-Folders need no `StorageObject`.
+Folders need no `StorageObject`. Uploads and nested folders follow the
+parent folder's storage. Root placement is `instance_settings`
+(`default` / `fill_order` / `most_free`).
 
 ### `media_file_objects` (link)
 
 `media_file_id`, `storage_object_id`, `role` (`primary`\|`replica`;
-v1 = `primary` only). Unique `storage_object_id` in v1.
+v1 = `primary` only). A StorageObject may link to **multiple** MediaFiles
+(same-storage library copy shares bytes). Import still treats “any link
+exists” as already imported.
 
 ### `provider_connections` additions
 
@@ -103,10 +109,27 @@ only; pagination happens in SQL for the owned/parent-scoped browses.
 
 ## Sync
 
-Triggered on connect when `import_existing` is true, and later via
-`POST /providers/{uid}/sync` (**202**, background job). Walks the
-provider (plugin `list`), upserts `StorageObject`s, and creates missing
-`MediaFile`s under a connection-named library root (flat for Telegram).
+Triggered on connect when `import_existing` is true, later via
+`POST /providers/{uid}/sync` (**202**, background job), and on an
+interval (`UMEDIA_SYNC_POLL_INTERVAL_SECONDS`, default 900) for every
+**enabled** connection. Manual POST always runs immediately (202), even
+if the connection is disabled; the poller skips disabled connections.
+Both triggers share one reconcile (`import_from_provider`) and the same
+`active_syncs` set, so `GET /providers/{uid}/sync` reports running vs
+idle for either.
+
+Walks the provider (plugin `list`), upserts `StorageObject`s, and creates
+missing `MediaFile`s under a connection-named library root (flat for
+Telegram). After a **complete successful** walk, index rows not observed
+this pass are marked `status=missing` (the StorageObject row stays; it
+is not `is_deleted`) and their linked MediaFiles are sent to Trash
+(soft-delete, same cascade as a user trash of a folder — never
+hard-deleted). A listing error (or any exception during the walk)
+propagates and **does not** mark anything missing — a partial scan must
+not look like mass deletion. If a previously-missing object reappears,
+the same MediaFile uid is restored (stars/shares survive). A MediaFile
+the user trashed while the StorageObject was still `active` is left in
+trash.
 
 - Per file: store a streamed **SHA-256 `content_hash`** when unknown or
   when size/`mtime` changed; reuse the prior hash when unchanged.

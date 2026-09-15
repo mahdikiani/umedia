@@ -20,11 +20,15 @@ class _AppStateProtocol(Protocol):
 
 
 def build_s3_service(
-    state: _AppStateProtocol, *, user_id: str,
+    state: _AppStateProtocol,
+    *,
+    user_id: str,
+    is_admin: bool = False,
 ) -> S3ObjectService:
     """The gateway service scoped to one authenticated key owner."""
     return S3ObjectService(
         user_id=user_id,
         media_files=build_media_file_service_from_state(state),
         connections=ProviderConnectionRepository(state.session_factory),
+        is_admin=is_admin,
     )

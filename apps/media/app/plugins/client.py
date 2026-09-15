@@ -30,6 +30,16 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 READ_RETRY_ATTEMPTS = 3
 READ_RETRY_BACKOFF_SECONDS = 0.5
 
+# Content streams (cross-storage byte copies) can run for minutes on large
+# objects. Keep a short connect/pool timeout for JSON RPC, but do not apply
+# the 10s default as a whole-response read deadline on `aiter_bytes`.
+CONTENT_STREAM_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_TIMEOUT_SECONDS,
+    read=None,
+    write=60.0,
+    pool=DEFAULT_TIMEOUT_SECONDS,
+)
+
 
 class PluginRPCError(RuntimeError):
     """A plugin call failed -- connection/timeout, or a non-2xx response."""
@@ -153,7 +163,11 @@ class PluginClient:
         *,
         range_header: str | None = None,
     ) -> AsyncIterator[bytes]:
-        """`GET /resources/{id}/content`, streamed. Retried (idempotent)."""
+        """`GET /resources/{id}/content`, streamed. Retried (idempotent).
+
+        Uses `CONTENT_STREAM_TIMEOUT` so large S3/object reads are not killed
+        by the JSON-RPC default (10s). Connect still fails fast.
+        """
         headers = _config_headers(config)
         if range_header:
             headers["Range"] = range_header
@@ -166,6 +180,7 @@ class PluginClient:
                         "GET",
                         f"/resources/{encode_resource_id(resource_id)}/content",
                         headers=headers,
+                        timeout=CONTENT_STREAM_TIMEOUT,
                     ) as response,
                 ):
                     if response.status_code >= 400:

@@ -12,6 +12,9 @@ class ProviderConnection(BaseEntity):
 
     __tablename__ = "provider_connections"
 
+    # Creating user's uid — each authenticated user only sees and manages
+    # their own connections (local storage is additionally admin-only).
+    owner_id: Mapped[str] = mapped_column(index=True)
     provider_type: Mapped[str] = mapped_column(index=True)
     name: Mapped[str] = mapped_column(index=True)
     encrypted_config: Mapped[str] = mapped_column(Text)

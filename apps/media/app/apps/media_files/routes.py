@@ -20,7 +20,6 @@ from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
-    Depends,
     File,
     Form,
     HTTPException,
@@ -31,7 +30,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from apps.auth.middleware import require_admin, resolve_optional_user
+from apps.auth.middleware import resolve_optional_user
 
 from .api_schemas import (
     LinkIn,
@@ -43,19 +42,24 @@ from .api_schemas import (
     StorageObjectOut,
     SyncAcceptedOut,
     SyncStatusOut,
+    TemporaryAddIn,
     TemporaryLinkIn,
     TemporaryLinkOut,
+    TransferCreateIn,
+    TransferOut,
     VolumeStatsOut,
 )
 from .content_type import serve_content_type
-from .errors import MediaFileValidationError
+from .errors import MediaFileNotFoundError, MediaFileValidationError
 from .factory import (
     build_media_file_service,
-    build_media_file_service_from_state,
     build_storage_object_service,
+    build_transfer_service,
+    run_inbound_sync,
 )
 from .schemas import MediaFileRecord
 from .services import UNSET, MediaFileService
+from .transfer_service import TransferCreate
 
 router = APIRouter(prefix="/files", tags=["Files"])
 public_router = APIRouter(prefix="/f", tags=["Public links"])
@@ -82,6 +86,36 @@ def _actor(request: Request) -> str:
     return request.state.user.uid
 
 
+def _is_admin(request: Request) -> bool:
+    return "admin" in (request.state.user.roles or [])
+
+
+async def _require_owned_connection(request: Request, uid: str) -> object:
+    """Owner + usable gate for `/providers/{uid}/objects` and sync.
+
+    404 when missing, unowned, or not usable (e.g. non-admin with a
+    leftover `local` connection after role demotion) -- do not leak
+    existence.
+    """
+    from apps.provider_connections.repository import ProviderConnectionRepository
+    from apps.provider_connections.services import connection_usable_by
+
+    user = request.state.user
+    connection = await ProviderConnectionRepository(
+        request.app.state.session_factory,
+    ).get(uid, owner_id=user.uid)
+    if connection is None or not connection_usable_by(
+        connection,
+        actor_user_id=user.uid,
+        is_admin=_is_admin(request),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Provider connection not found",
+        )
+    return connection
+
+
 def _parse_range(range_header: str | None, size: int) -> tuple[int, int] | None:
     if not range_header:
         return None
@@ -96,13 +130,35 @@ def _parse_range(range_header: str | None, size: int) -> tuple[int, int] | None:
     return start, end
 
 
-def _metadata_headers(record: MediaFileRecord) -> dict[str, str]:
+# Private library bytes must never sit in a shared cache (Cloudflare sits
+# in front of umedia.uln.me). Without this, an authenticated `<img src=
+# /files/{uid}/content/...>` response can later be replayed to an
+# anonymous/incognito client keyed only by URL. Public `/f/{uid}` may be
+# shared-cached; max-age is the revoke latency vs origin-hit tradeoff.
+_PRIVATE_CACHE_CONTROL = "private, no-store"
+_PUBLIC_LINK_CACHE_CONTROL = "public, max-age=300"
+
+
+def _metadata_headers(
+    record: MediaFileRecord,
+    *,
+    attachment: bool = False,
+    shared_cacheable: bool = False,
+) -> dict[str, str]:
+    disposition = "attachment" if attachment else "inline"
     headers = {
         "Content-Type": serve_content_type(record.name, record.content_type),
         "Content-Length": str(record.size),
-        "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.name)}",
+        "Content-Disposition": (
+            f"{disposition}; filename*=UTF-8''{quote(record.name)}"
+        ),
         "Accept-Ranges": "bytes",
         "Last-Modified": record.updated_at.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+        "Cache-Control": (
+            _PUBLIC_LINK_CACHE_CONTROL
+            if shared_cacheable
+            else _PRIVATE_CACHE_CONTROL
+        ),
     }
     if record.content_hash:
         headers["ETag"] = f'"{record.content_hash}"'
@@ -153,7 +209,22 @@ async def _content_response(
             actor_user_id=actor_user_id,
             range_header=range_header,
         )
-    headers = _metadata_headers(record)
+    download = request.query_params.get("download", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    # Only truly public `/f/` responses may be edge-cached. `/files/...`
+    # stays private even when the same file is also public via `/f/`, and
+    # ACL-only `/f/` opens (logged-in recipient, `public_permission=none`)
+    # must not poison a shared cache either.
+    headers = _metadata_headers(
+        record,
+        attachment=download,
+        shared_cacheable=(
+            via_public_link and record.public_permission == "read"
+        ),
+    )
     if bounds is None:
         return StreamingResponse(stream, status_code=200, headers=headers)
 
@@ -175,7 +246,7 @@ async def list_files(
     q: str | None = None,
     scope: Annotated[str, Query()] = "owned",
     include_deleted: Annotated[bool, Query()] = False,
-    sort: Annotated[Literal["name", "updated_at", "type"], Query()] = "name",
+    sort: Annotated[Literal["name", "updated_at", "type", "size"], Query()] = "name",
     order: Annotated[Literal["asc", "desc"] | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -200,7 +271,9 @@ async def list_files(
             offset=offset,
         )
     else:
-        effective_order = order or ("desc" if sort == "updated_at" else "asc")
+        effective_order = order or (
+            "desc" if sort in {"updated_at", "size"} else "asc"
+        )
         page = await service.list_children(
             parent_id,
             actor_user_id=actor_user_id,
@@ -224,6 +297,88 @@ async def library_stats(request: Request) -> VolumeStatsOut:
     return VolumeStatsOut(**stats)
 
 
+@router.post(
+    "/transfers",
+    response_model=TransferOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_transfer(
+    request: Request, body: TransferCreateIn,
+) -> TransferOut:
+    """Enqueue a library move/copy job (always 202, even for one item)."""
+    record = await build_transfer_service(request).create_and_enqueue(
+        _actor(request),
+        TransferCreate(
+            operation=body.operation,
+            source_ids=body.source_ids,
+            dest_parent_id=body.dest_parent_id,
+            conflict=body.conflict,
+        ),
+        is_admin=_is_admin(request),
+    )
+    return TransferOut.from_record(record)
+
+
+@router.get("/transfers", response_model=list[TransferOut])
+async def list_transfers(request: Request) -> list[TransferOut]:
+    """Recent transfer jobs for the caller (newest first, max 50)."""
+    records = await build_transfer_service(request).list_for_user(
+        actor_user_id=_actor(request),
+    )
+    return [TransferOut.from_record(record) for record in records]
+
+
+@router.get("/transfers/{uid}", response_model=TransferOut)
+async def get_transfer(uid: str, request: Request) -> TransferOut:
+    record = await build_transfer_service(request).get(
+        uid, actor_user_id=_actor(request),
+    )
+    return TransferOut.from_record(record)
+
+
+@router.post("/temporary", status_code=status.HTTP_204_NO_CONTENT)
+async def add_temporary_items(
+    request: Request,
+    body: TemporaryAddIn,
+) -> Response:
+    await _service(request).add_temporary_items(
+        body.media_file_ids,
+        actor_user_id=_actor(request),
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/temporary", response_model=list[MediaFileOut])
+async def list_temporary_items(request: Request) -> list[MediaFileOut]:
+    records = await _service(request).list_temporary_items(
+        actor_user_id=_actor(request),
+    )
+    return [MediaFileOut.from_record(record) for record in records]
+
+
+@router.delete(
+    "/temporary/{media_file_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_temporary_item(
+    media_file_id: str,
+    request: Request,
+) -> Response:
+    await _service(request).remove_temporary_item(
+        media_file_id,
+        actor_user_id=_actor(request),
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/temporary", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_temporary_items(request: Request) -> Response:
+    await _service(request).clear_temporary_items(
+        actor_user_id=_actor(request),
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("", response_model=MediaFileOut, status_code=201)
 async def create_file(
     request: Request,
@@ -233,21 +388,19 @@ async def create_file(
     provider_connection_id: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
 ) -> MediaFileOut:
-    """Upload a file (needs `provider_connection_id` + `file`), or make a
-    library folder (`type=folder`, no provider involved at all)."""
+    """Upload a file or make a library folder (`type=folder`). Placement
+    is resolved by the service: a bound parent folder wins, otherwise
+    the instance policy."""
     service = _service(request)
     if type == "folder":
         record = await service.create_folder(
             name=name,
             parent_id=parent_id,
             owner_id=_actor(request),
+            is_admin=_is_admin(request),
         )
         return MediaFileOut.from_record(record)
 
-    if provider_connection_id is None:
-        raise MediaFileValidationError(
-            "provider_connection_id is required to upload a file",
-        )
     content = await file.read() if file is not None else b""
     record = await service.upload(
         provider_connection_id=provider_connection_id,
@@ -256,6 +409,7 @@ async def create_file(
         content=content,
         content_type=file.content_type if file is not None else None,
         owner_id=_actor(request),
+        is_admin=_is_admin(request),
     )
     return MediaFileOut.from_record(record)
 
@@ -312,20 +466,40 @@ async def update_file(
 
 
 @router.get("/{uid}/content")
-@router.get("/{uid}/content/{filename:path}")
+@router.get("/{uid}/content/{filename}")
 async def read_file_content(
     uid: str,
     request: Request,
     filename: str | None = None,
 ) -> Response:
-    """Stream file bytes. Optional trailing `{filename}` is cosmetic
-    (helps browsers name downloads); resolution is by `uid` only."""
-    return await _content_response(
-        _service(request),
-        uid,
-        request,
-        actor_user_id=_actor(request),
-    )
+    """Stream file bytes under the content open matrix.
+
+    Optional trailing `{filename}` is a single cosmetic name segment; only
+    `{uid}` is looked up. Session is optional: owner / ACL share /
+    workspace / permanent public may open; everyone else gets 404 (not
+    401 -- existence must stay private). Short-lived links use `/s3/...`.
+    """
+    user = await resolve_optional_user(request)
+    try:
+        return await _content_response(
+            _service(request),
+            uid,
+            request,
+            actor_user_id=None if user is None else user.uid,
+            via_public_link=True,
+        )
+    except MediaFileNotFoundError as exc:
+        # Deny must not be edge-cached: a later public-share flip would
+        # otherwise keep serving this 404 from Cloudflare.
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.error_code,
+                "message": exc.message,
+                "details": {},
+            },
+            headers={"Cache-Control": _PRIVATE_CACHE_CONTROL},
+        )
 
 
 @router.get("/{uid}/permissions", response_model=list[PermissionOut])
@@ -432,7 +606,6 @@ async def delete_file(
 @provider_index_router.get(
     "/providers/{uid}/objects",
     response_model=PageOut[StorageObjectOut],
-    dependencies=[Depends(require_admin)],
 )
 async def list_provider_objects(
     uid: str,
@@ -444,9 +617,11 @@ async def list_provider_objects(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> PageOut[StorageObjectOut]:
     """Browse one connection's physical index -- from SQLite (what sync
-    has indexed), never a live provider call. Admin-only: StorageObjects
-    carry no per-user ACL; the physical layer belongs to the operator.
-    Paginated with the same `limit`/`offset` envelope as `GET /files`."""
+    has indexed), never a live provider call. Owner-only: StorageObjects
+    carry no per-user ACL; the physical layer belongs to the connection
+    owner. Paginated with the same `limit`/`offset` envelope as
+    `GET /files`."""
+    await _require_owned_connection(request, uid)
     service = build_storage_object_service(request)
     if q is not None and q.strip():
         page = await service.search(
@@ -471,14 +646,17 @@ async def list_provider_objects(
 
 
 def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> None:
-    """Detached sync job — same keep-alive pattern as connect-time import."""
+    """Detached sync job — same keep-alive pattern as connect-time import.
+    The reconcile itself lives in `run_inbound_sync` so the interval
+    poller walks the same path.
+    """
 
     async def _run() -> None:
         try:
-            service = build_media_file_service_from_state(request.app.state)
-            result = await service.import_from_provider(
+            result = await run_inbound_sync(
+                request.app.state,
                 connection_uid,
-                actor_user_id=actor_uid,
+                actor_uid,
             )
             logging.info(
                 "Sync for provider '%s' finished: %s",
@@ -500,22 +678,13 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
 @provider_index_router.get(
     "/providers/{uid}/sync",
     response_model=SyncStatusOut,
-    dependencies=[Depends(require_admin)],
 )
 async def get_sync_status(uid: str, request: Request) -> SyncStatusOut:
-    """Whether an explicit background sync is currently walking this
-    connection -- the Storage UI polls this so the Sync button can stay
-    spinning/disabled for the whole job, not just the 202 accept."""
-    from apps.provider_connections.repository import ProviderConnectionRepository
-
-    connection = await ProviderConnectionRepository(
-        request.app.state.session_factory,
-    ).get(uid)
-    if connection is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Provider connection not found",
-        )
+    """Whether a background sync is currently walking this connection
+    (manual POST or the interval poller -- both use `active_syncs`).
+    The Storage UI polls this so the Sync button can stay spinning/
+    disabled for the whole job, not just the 202 accept."""
+    await _require_owned_connection(request, uid)
     running = uid in request.app.state.active_syncs
     return SyncStatusOut(
         connection_id=uid,
@@ -531,28 +700,18 @@ async def get_sync_status(uid: str, request: Request) -> SyncStatusOut:
 async def sync_provider(
     uid: str,
     request: Request,
-    admin: Annotated[object, Depends(require_admin)],
 ) -> SyncAcceptedOut:
     """Accept a sync job immediately; the provider walk + reconcile runs
-    in the background so the UI never blocks on a large tree."""
-    from apps.provider_connections.repository import ProviderConnectionRepository
-
+    in the background so the UI never blocks on a large tree. Owner-only."""
+    await _require_owned_connection(request, uid)
     if uid in request.app.state.active_syncs:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A sync is already running for this provider",
         )
-    connection = await ProviderConnectionRepository(
-        request.app.state.session_factory,
-    ).get(uid)
-    if connection is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Provider connection not found",
-        )
 
     request.app.state.active_syncs.add(uid)
-    _schedule_sync(request, uid, admin.uid)
+    _schedule_sync(request, uid, request.state.user.uid)
     return SyncAcceptedOut(connection_id=uid)
 
 
@@ -569,7 +728,7 @@ async def _optional_actor(request: Request) -> str | None:
 
 
 @public_router.get("/{uid}")
-@public_router.get("/{uid}/{filename:path}")
+@public_router.get("/{uid}/{filename}")
 async def get_public_link(
     uid: str,
     request: Request,
@@ -588,17 +747,28 @@ async def get_public_link(
             actor_user_id=actor_user_id,
         )
         return JSONResponse(MediaFileOut.from_record(record).model_dump(mode="json"))
-    return await _content_response(
-        service,
-        uid,
-        request,
-        actor_user_id=actor_user_id,
-        via_public_link=True,
-    )
+    try:
+        return await _content_response(
+            service,
+            uid,
+            request,
+            actor_user_id=actor_user_id,
+            via_public_link=True,
+        )
+    except MediaFileNotFoundError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.error_code,
+                "message": exc.message,
+                "details": {},
+            },
+            headers={"Cache-Control": _PRIVATE_CACHE_CONTROL},
+        )
 
 
 @public_router.head("/{uid}")
-@public_router.head("/{uid}/{filename:path}")
+@public_router.head("/{uid}/{filename}")
 async def head_public_link(
     uid: str,
     request: Request,
@@ -608,4 +778,9 @@ async def head_public_link(
         uid,
         actor_user_id=await _optional_actor(request),
     )
-    return Response(headers=_metadata_headers(record))
+    return Response(
+        headers=_metadata_headers(
+            record,
+            shared_cacheable=record.public_permission == "read",
+        ),
+    )

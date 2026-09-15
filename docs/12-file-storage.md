@@ -67,9 +67,14 @@ messages are valid resources (`docs/03-provider-system.md`).
 ## Upload
 
 1. Create a MediaFile (`status=processing`) with the library `parent_id`.
-2. Write bytes through the plugin at the **provider root**
-   (`CreateResourceIn.parent_id=None`). The UI folder is not the remote
-   path.
+2. Write bytes through the plugin. For most providers that is the
+   **provider root** (`CreateResourceIn.parent_id=None`) — the UI folder
+   is not the remote path. **Local is the exception:** the connection is
+   still instance-level (one `root_path`), but core namespaces the dump
+   to `.umedia/users/{owner_id}/{media_file_uid}/{filename}` so two users
+   cannot overwrite the same disk path. The plugin never sees `owner_id`;
+   it only receives a parent path. Inbound sync does not import that
+   `.umedia/` tree into the library, and does not missing-mark it.
 3. Verify the write landed, upsert a StorageObject from the plugin's id,
    link it as `primary`, mark the MediaFile completed.
 
@@ -110,6 +115,19 @@ Two independent flags on `ProviderConnection`:
 | true | false | Index the remote; reorganize only in UMedia |
 | false | true | New writes/moves mirrored; do not pull the old remote tree |
 | true | true | Import plus keep structure in sync where the plugin allows |
+
+Inbound reconcile is one operation with two triggers: interval polling
+of every **enabled** connection (`UMEDIA_SYNC_POLL_INTERVAL_SECONDS`,
+default 900s) and the existing manual `POST /providers/{uid}/sync`
+(always 202, including disabled connections). Both share the same
+runner and `active_syncs` set. Uploads from the UMedia UI are a
+separate path.
+
+After a complete successful provider walk, StorageObjects not observed
+this pass are marked `status=missing` (row kept, still visible in
+Storage browse) and linked MediaFiles go to Trash. They restore to the
+same MediaFile uid if the remote object returns. A failed or incomplete
+listing never marks unseen objects missing.
 
 Sync is a background job (`202`). `GET /files` does not wait for it.
 If the remote is newer (mtime/size), prior indexed metadata goes into

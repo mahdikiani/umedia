@@ -152,6 +152,27 @@ async def test_change_password_rejects_wrong_current_password(
 
 
 @pytest.mark.asyncio
+async def test_refresh_rotates_the_token_pair_and_rejects_reuse(
+    auth_service: AuthService,
+) -> None:
+    pair, user = await auth_service.setup(
+        "admin@example.com",
+        "a secure first password",
+        user_agent=None,
+        ip=None,
+    )
+
+    rotated, refreshed = await auth_service.refresh(pair.refresh_token)
+
+    assert refreshed.uid == user.uid
+    assert rotated.access_token != pair.access_token
+    assert rotated.refresh_token != pair.refresh_token
+
+    with pytest.raises(USSOException):
+        await auth_service.refresh(pair.refresh_token)
+
+
+@pytest.mark.asyncio
 async def test_logout_is_a_no_op_without_a_refresh_token(
     auth_service: AuthService,
 ) -> None:

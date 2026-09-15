@@ -64,7 +64,8 @@ uniqueness constraint on `provider_type` alone), which is what
 | Column | Type | Notes |
 |---|---|---|
 | `uid` | str, pk | |
-| `provider_type` | str, indexed | matches a loaded plugin manifest's `id` |
+| `owner_id` | str, indexed, required | creating user's uid; each user only lists/manages their own connections |
+| `provider_type` | str, indexed | matches a loaded plugin manifest's `id` (`local` is admin-only to create and use) |
 | `name` | str, indexed | user-given label, e.g. "AWS Personal" vs "Backblaze Backup" |
 | `encrypted_config` | text | JSON config, encrypted at rest; decrypted only in-core, passed to the plugin per-call |
 | `status` | str | `configured` / `active` / `disabled` / `error` |
@@ -89,7 +90,8 @@ linked primary `storage_objects` row in the same local SQL query.
 | `workspace_id` | str, nullable, indexed | reserved |
 | `type` | str | `file` \| `folder` \| `message` \| … — open vocabulary |
 | `name` | str, indexed | |
-| `parent_id` | str, nullable, indexed | self-referential library tree; null = root. Folders are library-only: no plugin call, no StorageObject |
+| `parent_id` | str, nullable, indexed | self-referential library tree; null = root |
+| `provider_connection_id` | str, nullable, indexed | folders are bound to one storage; uploads into a folder follow this (walk ancestors if a parent is unbound). Files store the same as a denormalized hint; the StorageObject join remains source of truth for linked bytes. Root placement uses `instance_settings` |
 | `metadata` | JSON | app-level bag; e.g. `{"import_root": <connection uid>}` marks a connection's library root folder |
 | `status` | str | `processing` \| `completed` \| `failed` |
 | `error` | text, nullable | |
@@ -116,7 +118,7 @@ library's business.
 | `content_type` | str | MIME type |
 | `size` | int | |
 | `metadata` | JSON | provider-specific bag (e.g. `{channel_id, message_id}` for Telegram) |
-| `status` | str | `active` \| … |
+| `status` | str | `active` \| `missing` — `missing` means the last **complete** inbound walk did not observe this object; the row stays (Storage browse can still show it). Reappear on a later walk sets `active` again |
 | `last_seen_at` | datetime | refreshed on every upsert/sync pass |
 | `deleted_at` | datetime, nullable | |
 
@@ -147,7 +149,18 @@ table get one lazily on their first mint.
 | `is_active` | bool, indexed, default `true` | deactivating a key immediately revokes every temporary link it ever signed (verification only accepts active keys) |
 
 `is_deleted`/`created_at`/`updated_at`/`uid` come from `BaseEntity` on all
-four tables.
+tables below.
+
+### `instance_settings` (singleton)
+
+Where root uploads and new root folders land when the parent folder is
+not already bound. `GET/PATCH /settings/placement`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `placement_policy` | str | `default` \| `fill_order` \| `most_free` (`most_free` currently follows fill-order until plugins report capacity) |
+| `default_connection_id` | str, nullable | used by the `default` policy |
+| `fill_order` | JSON list of connection uids | used by `fill_order` / `most_free` |
 
 ### `resources` (legacy, unmounted)
 

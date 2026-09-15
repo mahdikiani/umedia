@@ -70,7 +70,7 @@ function DashboardSearchField() {
         />
         <Input
           aria-label={mode === "files" ? text.searchFiles : text.searchStorage}
-          className="h-9 bg-muted/40 pe-3 ps-9"
+          className="h-9 pe-3 ps-9"
           onChange={(event) => setValue(event.target.value)}
           placeholder={
             mode === "files" ? text.searchFilesPlaceholder : text.searchStoragePlaceholder

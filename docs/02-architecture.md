@@ -224,7 +224,18 @@ for the full rationale and `docs/AUTHENTICATION_DESIGN.md` (superseded, kept
 for reference) for the auth flow this replaces.
 
 Roles are `admin | user`; an unauthenticated request has no session. Bootstrap
-setup creates the first admin exactly once. Admins manage users via `/users`
-and manage providers. Future remote deployments using full `usso` tokens may
-use fine-grained scopes, while `usso.lite` remains the default for a
-single-container deployment. `workspace_id` is reserved on resources.
+setup creates the first admin exactly once (password only — OIDC is not
+offered during setup). Admins manage users via `/users`. When Google OAuth
+client credentials are configured, existing users may also sign in via
+**OIDC identity** (`POST /auth/oidc/start` + `/complete`, openid/email/profile
+scopes). That is separate from **Google Drive storage OAuth** under
+`/providers/oauth/*` (Drive scopes); both may share the same Google Cloud
+OAuth client but must not be merged. OIDC signup is disabled — only
+pre-created accounts can log in.
+
+Provider connections are **per-user** (`owner_id`); each authenticated user
+only lists and manages their own. **Local filesystem storage** (`provider_type
+= local`) is admin-only to create and use. Future remote deployments using
+full `usso` tokens may use fine-grained scopes, while `usso.lite` remains the
+default for a single-container deployment. `workspace_id` is reserved on
+resources.

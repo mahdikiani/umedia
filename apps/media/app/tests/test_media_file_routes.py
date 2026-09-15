@@ -127,6 +127,26 @@ async def test_markdown_content_is_utf8_plain_text_not_html(
 
 
 @pytest.mark.asyncio
+async def test_content_download_query_sets_attachment_disposition(
+    client: httpx.AsyncClient, connection_id: str,
+) -> None:
+    await _authenticated(client)
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": "save-me.txt"},
+        files={"file": ("save-me.txt", b"payload", "text/plain")},
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+
+    inline = await client.get(f"/files/{uid}/content")
+    assert inline.headers["content-disposition"].startswith("inline;")
+
+    download = await client.get(f"/files/{uid}/content?download=1")
+    assert download.headers["content-disposition"].startswith("attachment;")
+
+
+@pytest.mark.asyncio
 async def test_folders_are_library_only_and_nest(
     client: httpx.AsyncClient, connection_id: str,
 ) -> None:
@@ -173,22 +193,26 @@ async def test_patch_renames_and_moves(
     ).json()["uid"]
     created = await client.post(
         "/files",
-        data={"provider_connection_id": connection_id, "name": "before.txt"},
+        data={"name": "before.txt", "parent_id": folder_uid},
         files={"file": ("before.txt", b"v1", "text/plain")},
     )
+    assert created.status_code == 201, created.text
     uid = created.json()["uid"]
+    assert created.json()["parent_id"] == folder_uid
+    del connection_id
 
     renamed = await client.patch(f"/files/{uid}", json={"name": "after.txt"})
     assert renamed.status_code == 200, renamed.text
     assert renamed.json()["name"] == "after.txt"
-
-    moved = await client.patch(f"/files/{uid}", json={"parent_id": folder_uid})
-    assert moved.status_code == 200, moved.text
-    assert moved.json()["parent_id"] == folder_uid
+    assert renamed.json()["parent_id"] == folder_uid
 
     to_root = await client.patch(f"/files/{uid}", json={"parent_id": None})
     assert to_root.status_code == 200, to_root.text
     assert to_root.json()["parent_id"] is None
+
+    moved = await client.patch(f"/files/{uid}", json={"parent_id": folder_uid})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["parent_id"] == folder_uid
 
 
 @pytest.mark.asyncio
@@ -355,9 +379,15 @@ async def test_sync_imports_preexisting_provider_files(
     assert root is not None, "sync task never produced the connection root"
     assert synced.json()["connection_id"] == provider_uid
 
-    children = (
-        await client.get("/files", params={"parent_id": root["uid"]})
-    ).json()["items"]
+    children = []
+    for _ in range(100):
+        children = (
+            await client.get("/files", params={"parent_id": root["uid"]})
+        ).json()["items"]
+        names = sorted(item["name"] for item in children)
+        if names == ["docs", "hello.txt"]:
+            break
+        await asyncio.sleep(0.05)
     assert sorted(item["name"] for item in children) == ["docs", "hello.txt"]
 
     imported = next(item for item in children if item["name"] == "hello.txt")
@@ -431,9 +461,108 @@ async def test_connect_with_import_existing_runs_the_import(
 @pytest.mark.asyncio
 async def test_files_routes_require_authentication(
     client: httpx.AsyncClient,
+    connection_id: str,
 ) -> None:
+    """Library metadata stays session-gated (401). Content URLs are
+    session-optional and apply the open matrix -- a private file must
+    404 for anonymous callers (not 401), so existence stays hidden."""
+    await _authenticated(client)
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": "secret.png"},
+        files={"file": ("secret.png", b"png-bytes", "image/png")},
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+
     anonymous = httpx.AsyncClient(
         transport=client._transport, base_url=str(client.base_url),
     )
     async with anonymous:
         assert (await anonymous.get("/files")).status_code == 401
+        assert (await anonymous.get(f"/files/{uid}")).status_code == 401
+        assert (await anonymous.get(f"/files/{uid}/content")).status_code == 404
+        assert (
+            await anonymous.get(f"/files/{uid}/content/secret.png")
+        ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_private_content_is_not_shared_cacheable(
+    client: httpx.AsyncClient, connection_id: str,
+) -> None:
+    """Authenticated `/files/{uid}/content` sits behind Cloudflare on
+    preview. Without `Cache-Control: private, no-store`, an edge cache
+    keyed only by URL can serve bytes to an anonymous/incognito client
+    after the owner loaded the image once (e.g. via `<img src>`)."""
+    await _authenticated(client)
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": "logo.png"},
+        files={"file": ("logo.png", b"logo-bytes", "image/png")},
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+
+    content = await client.get(f"/files/{uid}/content/logo.png")
+    assert content.status_code == 200
+    assert content.content == b"logo-bytes"
+    cache_control = content.headers["cache-control"].lower()
+    assert "private" in cache_control
+    assert "no-store" in cache_control
+
+    head = await client.head(f"/files/{uid}")
+    assert head.status_code == 200
+    head_cc = head.headers["cache-control"].lower()
+    assert "private" in head_cc
+    assert "no-store" in head_cc
+
+
+@pytest.mark.asyncio
+async def test_public_link_content_may_be_shared_cached(
+    client: httpx.AsyncClient, connection_id: str,
+) -> None:
+    """Once `public_permission=read`, `/f/{uid}` is intentionally
+    anonymous — edge caching is fine. Non-public files reachable via
+    `/f/` only because of ACL must stay private (no shared cache)."""
+    await _authenticated(client)
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": "pub.txt"},
+        files={"file": ("pub.txt", b"public bytes", "text/plain")},
+    )
+    uid = created.json()["uid"]
+    await client.patch(f"/files/{uid}", json={"public_permission": "read"})
+
+    anonymous = httpx.AsyncClient(
+        transport=client._transport, base_url=str(client.base_url),
+    )
+    async with anonymous:
+        content = await anonymous.get(f"/f/{uid}/pub.txt")
+        assert content.status_code == 200
+        assert content.content == b"public bytes"
+        assert "public" in content.headers["cache-control"].lower()
+        assert "no-store" not in content.headers["cache-control"].lower()
+
+@pytest.mark.asyncio
+async def test_anonymous_can_open_public_file_via_files_content(
+    client: httpx.AsyncClient, connection_id: str,
+) -> None:
+    """A permanently public file must open on `/files/{uid}/content` too
+    (not only `/f/{uid}`) -- same open matrix, 404 only when no grant."""
+    await _authenticated(client)
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": "banner.png"},
+        files={"file": ("banner.png", b"banner-bytes", "image/png")},
+    )
+    uid = created.json()["uid"]
+    await client.patch(f"/files/{uid}", json={"public_permission": "read"})
+
+    anonymous = httpx.AsyncClient(
+        transport=client._transport, base_url=str(client.base_url),
+    )
+    async with anonymous:
+        content = await anonymous.get(f"/files/{uid}/content/banner.png")
+        assert content.status_code == 200
+        assert content.content == b"banner-bytes"

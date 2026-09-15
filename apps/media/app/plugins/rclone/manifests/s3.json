@@ -1,17 +1,40 @@
 {
   "id": "s3",
   "name": "S3 compatible",
-  "description": "AWS S3, MinIO, Backblaze B2 and compatible services.",
+  "description": "Cloudflare R2, AWS S3, MinIO, Backblaze B2, and other S3-compatible object stores.",
   "entrypoint": ["python", "-m", "plugins.rclone.main"],
   "process_id": "rclone",
   "remote_type": "s3",
   "status": "available",
   "capabilities": ["list", "read", "write", "delete", "move", "copy"],
   "config_fields": [
-    { "key": "endpoint_url", "label": "Endpoint URL", "required": false },
-    { "key": "bucket", "label": "Bucket" },
-    { "key": "region", "label": "Region", "required": false },
-    { "key": "access_key_id", "label": "Access key", "secret": true },
+    {
+      "key": "endpoint_url",
+      "label": "Endpoint URL",
+      "required": false,
+      "placeholder": "https://<account_id>.r2.cloudflarestorage.com"
+    },
+    {
+      "key": "bucket",
+      "label": "Bucket"
+    },
+    {
+      "key": "region",
+      "label": "Region",
+      "required": false,
+      "placeholder": "auto (R2) or us-east-1 (AWS)"
+    },
+    {
+      "key": "provider",
+      "label": "Provider profile",
+      "required": false,
+      "placeholder": "Leave blank to auto-detect (Minio / Cloudflare / AWS)"
+    },
+    {
+      "key": "access_key_id",
+      "label": "Access key",
+      "secret": true
+    },
     {
       "key": "secret_access_key",
       "label": "Secret key",

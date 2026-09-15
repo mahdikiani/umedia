@@ -24,6 +24,12 @@ class MediaFile(BaseEntity):
     type: Mapped[str] = mapped_column(index=True)  # "file" | "folder" | ...
     name: Mapped[str] = mapped_column(index=True)
     parent_id: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    # Folders are bound to one connection. Files may store the same as a
+    # denormalized hint; the StorageObject join remains the source of
+    # truth for linked bytes.
+    provider_connection_id: Mapped[str | None] = mapped_column(
+        nullable=True, index=True,
+    )
     # Python attribute can't be named `metadata` (reserved by SQLAlchemy's
     # declarative base); the column itself is still named "metadata".
     # Carries e.g. the `{"import_root": <connection uid>}` marker on a
@@ -44,20 +50,38 @@ class MediaFile(BaseEntity):
 
 
 class MediaFileObject(BaseEntity):
-    """The MediaFile -> StorageObject link. v1: `role="primary"` only,
-    and one link per StorageObject (unique below)."""
+    """The MediaFile -> StorageObject link. v1: `role="primary"` only.
+
+    One StorageObject may link to multiple MediaFiles (same-storage
+    library copy shares bytes). Import idempotency still uses
+    `get_by_storage_object` (first link) to avoid re-importing.
+    """
 
     __tablename__ = "media_file_objects"
-    __table_args__ = (
-        UniqueConstraint(
-            "storage_object_id",
-            name="uq_media_file_objects_storage_object",
-        ),
-    )
 
     media_file_id: Mapped[str] = mapped_column(index=True)
     storage_object_id: Mapped[str] = mapped_column(index=True)
     role: Mapped[str] = mapped_column(default="primary", index=True)
+
+
+class LibraryTransfer(BaseEntity):
+    """A bulk library move/copy job with progress."""
+
+    __tablename__ = "library_transfers"
+
+    owner_id: Mapped[str] = mapped_column(index=True)
+    operation: Mapped[str] = mapped_column()  # move | copy
+    status: Mapped[str] = mapped_column(index=True)  # queued|running|…
+    source_ids: Mapped[list] = mapped_column(JSON, default=list)
+    dest_parent_id: Mapped[str | None] = mapped_column(nullable=True)
+    conflict: Mapped[str] = mapped_column(default="rename")  # rename | skip
+    total_items: Mapped[int] = mapped_column(default=0)
+    done_items: Mapped[int] = mapped_column(default=0)
+    failed_items: Mapped[int] = mapped_column(default=0)
+    current_name: Mapped[str | None] = mapped_column(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class MediaFileStar(BaseEntity):
@@ -72,3 +96,28 @@ class MediaFileStar(BaseEntity):
 
     user_id: Mapped[str] = mapped_column(index=True)
     media_file_id: Mapped[str] = mapped_column(index=True)
+
+
+class MediaFileTemporaryItem(BaseEntity):
+    __tablename__ = "media_file_temporary_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "media_file_id",
+            name="uq_media_file_temporary_items_user_file",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(index=True)
+    media_file_id: Mapped[str] = mapped_column(index=True)
+
+
+class InstanceSettings(BaseEntity):
+    """Singleton instance config. Placement decides where root uploads
+    and new root folders land when the parent folder is not bound."""
+
+    __tablename__ = "instance_settings"
+
+    placement_policy: Mapped[str] = mapped_column(default="default")
+    default_connection_id: Mapped[str | None] = mapped_column(nullable=True)
+    fill_order: Mapped[list] = mapped_column(JSON, default=list)

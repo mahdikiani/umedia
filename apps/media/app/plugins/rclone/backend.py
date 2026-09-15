@@ -65,20 +65,58 @@ def _params(pairs: dict[str, str | None]) -> str:
     return ",".join(f"{key}={_quote(value)}" for key, value in pairs.items() if value)
 
 
+def _s3_provider(config: dict[str, Any]) -> str:
+    """Pick rclone's S3 provider quirks.
+
+    Directory prefixes (keys with ``/``) only show up as ``IsDir`` folders
+    when rclone uses a compatible provider profile. Empirically:
+
+    - Cloudflare R2 → ``Cloudflare``
+    - Custom / path-style endpoints (MinIO, Garage, RFS, …) → ``Minio``
+    - Plain AWS (no endpoint) → ``AWS``
+
+    ``Other`` is a last resort: on several S3-compatible hosts a root
+    ``operations/list`` then returns only files and never CommonPrefixes,
+    so import never walks nested keys.
+    """
+    explicit = (config.get("provider") or "").strip()
+    if explicit:
+        return explicit
+    endpoint = str(config.get("endpoint_url") or "").lower()
+    if "r2.cloudflarestorage.com" in endpoint:
+        return "Cloudflare"
+    if endpoint:
+        return "Minio"
+    return "AWS"
+
+
 def _s3_fs(config: dict[str, Any]) -> str:
     if not config.get("access_key_id") or not config.get("secret_access_key"):
         raise ConnectionFailedError("access_key_id and secret_access_key are required")
     if not config.get("bucket"):
         raise ConnectionFailedError("bucket is required")
+    provider = _s3_provider(config)
+    region = (config.get("region") or "").strip() or None
+    # Some UIs store a placeholder like "other-v2-signature"; treat as unset.
+    if region and region.lower().startswith("other"):
+        region = None
+    if not region and provider == "Cloudflare":
+        region = "auto"
     params: dict[str, str | None] = {
-        "provider": config.get("provider", "Other"),
+        "provider": provider,
         "access_key_id": config["access_key_id"],
         "secret_access_key": config["secret_access_key"],
-        "region": config.get("region"),
+        "region": region,
     }
     if config.get("endpoint_url"):
         params["endpoint"] = config["endpoint_url"]
         params["force_path_style"] = "true"
+        # Many S3-compatible hosts (MinIO/Garage/custom gateways) allow
+        # PutObject but deny HeadObject. rclone rcat treats the post-write
+        # HEAD as failure even when the PUT returned 200 — surface as a
+        # fake 403. Skip head/check so uploads succeed.
+        params["no_head"] = "true"
+        params["no_check_bucket"] = "true"
     return f":s3,{_params(params)}:{config['bucket']}"
 
 
@@ -87,6 +125,11 @@ def _google_drive_fs(config: dict[str, Any]) -> str:
         raise ConnectionFailedError("token is required")
     params: dict[str, str | None] = {
         "token": config["token"],
+        # Custom OAuth clients need these on the connection string so rclone
+        # can refresh tokens (defaults alone only work with rclone's own
+        # client id).
+        "client_id": config.get("client_id"),
+        "client_secret": config.get("client_secret"),
         "root_folder_id": config.get("root_folder_id"),
     }
     return f":drive,{_params(params)}:"

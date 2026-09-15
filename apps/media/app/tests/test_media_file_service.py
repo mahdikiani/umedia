@@ -139,9 +139,45 @@ async def test_create_folder_is_library_only(harness: Harness) -> None:
     assert folder.type == "folder"
     assert folder.status == "completed"
     assert folder.storage_object_uid is None
-    assert folder.provider_connection_id is None
+    assert folder.provider_connection_id == CONNECTION_ID
     assert folder.content_type == "inode/directory"
     assert harness.plugins.calls == []  # no plugin write for a folder
+
+
+@pytest.mark.asyncio
+async def test_nested_folder_and_upload_follow_the_parent_storage(
+    tmp_path: Path,
+) -> None:
+    """A folder is bound to one connection; children follow it even if
+    the caller names a different one."""
+    second = FakeConnection(uid="connection-2", name="Other")
+    harness = await build_harness(
+        tmp_path,
+        FakeConnection(uid=CONNECTION_ID),
+        second,
+    )
+    try:
+        await harness.settings.update(
+            {"placement_policy": "default", "default_connection_id": CONNECTION_ID},
+        )
+        folder = await harness.service.create_folder(
+            name="Movies", parent_id=None, owner_id=OWNER_ID,
+        )
+        assert folder.provider_connection_id == CONNECTION_ID
+        nested = await harness.service.create_folder(
+            name="2024", parent_id=folder.uid, owner_id=OWNER_ID,
+        )
+        assert nested.provider_connection_id == CONNECTION_ID
+        uploaded = await harness.service.upload(
+            provider_connection_id="connection-2",
+            parent_id=folder.uid,
+            name="clip.mp4",
+            content=b"video",
+            owner_id=OWNER_ID,
+        )
+        assert uploaded.provider_connection_id == CONNECTION_ID
+    finally:
+        await harness.engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -191,6 +227,70 @@ async def test_upload_creates_storage_object_and_links_it_primary(
     assert obj.size == 5
     assert obj.content_hash is not None
     assert harness.plugins.store[obj.content_reference] == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_local_upload_namespaces_each_owner_on_disk(
+    tmp_path: Path,
+) -> None:
+    """One local connection is shared; bytes are still per-user."""
+    local = FakeConnection(
+        uid=CONNECTION_ID, name="Disk", provider_type="local",
+    )
+    harness = await build_harness(tmp_path, local)
+    try:
+        first = await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name="notes.txt",
+            content=b"owner-one",
+            owner_id=OWNER_ID,
+            is_admin=True,
+        )
+        second = await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name="notes.txt",
+            content=b"owner-two",
+            owner_id=OTHER_USER_ID,
+            is_admin=True,
+        )
+
+        assert first.content_reference != second.content_reference
+        assert first.content_reference == (
+            f".umedia/users/{OWNER_ID}/{first.uid}/notes.txt"
+        )
+        assert second.content_reference == (
+            f".umedia/users/{OTHER_USER_ID}/{second.uid}/notes.txt"
+        )
+        assert harness.plugins.store[first.content_reference] == b"owner-one"
+        assert harness.plugins.store[second.content_reference] == b"owner-two"
+        assert harness.plugins.plugin_calls("create") == [
+            ("create", CONNECTION_ID, "notes.txt",
+             f".umedia/users/{OWNER_ID}/{first.uid}"),
+            ("create", CONNECTION_ID, "notes.txt",
+             f".umedia/users/{OTHER_USER_ID}/{second.uid}"),
+        ]
+    finally:
+        await harness.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_non_local_upload_still_writes_at_the_provider_root(
+    harness: Harness,
+) -> None:
+    created = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="notes.txt",
+        content=b"x",
+        owner_id=OWNER_ID,
+    )
+
+    assert created.content_reference == "ref-1"
+    assert harness.plugins.plugin_calls("create") == [
+        ("create", CONNECTION_ID, "notes.txt", None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -475,6 +575,49 @@ async def test_move_rejects_a_non_folder_target(harness: Harness) -> None:
         await harness.service.update(
             a.uid, actor_user_id=OWNER_ID, parent_id=b.uid,
         )
+
+
+@pytest.mark.asyncio
+async def test_move_rejects_a_folder_on_a_different_storage(
+    tmp_path: Path,
+) -> None:
+    second = FakeConnection(uid="connection-2", name="Other")
+    harness = await build_harness(
+        tmp_path,
+        FakeConnection(uid=CONNECTION_ID),
+        second,
+    )
+    try:
+        await harness.settings.update(
+            {"placement_policy": "default", "default_connection_id": CONNECTION_ID},
+        )
+        movies = await harness.service.create_folder(
+            name="Movies", parent_id=None, owner_id=OWNER_ID,
+        )
+        await harness.settings.update({"default_connection_id": "connection-2"})
+        docs = await harness.service.create_folder(
+            name="Docs", parent_id=None, owner_id=OWNER_ID,
+        )
+        assert movies.provider_connection_id == CONNECTION_ID
+        assert docs.provider_connection_id == "connection-2"
+        with pytest.raises(MediaFileValidationError) as moved_folder:
+            await harness.service.update(
+                movies.uid, actor_user_id=OWNER_ID, parent_id=docs.uid,
+            )
+        assert "different storage" in moved_folder.value.detail
+        clip = await harness.service.upload(
+            parent_id=movies.uid,
+            name="clip.mp4",
+            content=b"video",
+            owner_id=OWNER_ID,
+        )
+        with pytest.raises(MediaFileValidationError) as moved_file:
+            await harness.service.update(
+                clip.uid, actor_user_id=OWNER_ID, parent_id=docs.uid,
+            )
+        assert "different storage" in moved_file.value.detail
+    finally:
+        await harness.engine.dispose()
 
 
 # ----------------------------------------------------------------------

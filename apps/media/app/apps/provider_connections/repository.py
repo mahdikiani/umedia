@@ -20,32 +20,52 @@ class ProviderConnectionRepository:
             await session.refresh(connection)
             return connection
 
-    async def list(self) -> list[ProviderConnection]:
+    async def list(self, *, owner_id: str | None = None) -> list[ProviderConnection]:
         async with self._session_factory() as session:
-            result = await session.execute(
+            query = (
                 select(ProviderConnection)
                 .where(ProviderConnection.is_deleted.is_(False))
-                .order_by(ProviderConnection.created_at.desc()),
+                .order_by(ProviderConnection.created_at.desc())
             )
+            if owner_id is not None:
+                query = query.where(ProviderConnection.owner_id == owner_id)
+            result = await session.execute(query)
             return list(result.scalars())
 
-    async def get(self, uid: str) -> ProviderConnection | None:
+    async def get(
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
+    ) -> ProviderConnection | None:
         async with self._session_factory() as session:
+            clauses = [
+                ProviderConnection.uid == uid,
+                ProviderConnection.is_deleted.is_(False),
+            ]
+            if owner_id is not None:
+                clauses.append(ProviderConnection.owner_id == owner_id)
             result = await session.execute(
-                select(ProviderConnection).where(
-                    ProviderConnection.uid == uid,
-                    ProviderConnection.is_deleted.is_(False),
-                ),
+                select(ProviderConnection).where(*clauses),
             )
             return result.scalar_one_or_none()
 
-    async def update(self, uid: str, changes: dict) -> ProviderConnection | None:
+    async def update(
+        self,
+        uid: str,
+        changes: dict,
+        *,
+        owner_id: str | None = None,
+    ) -> ProviderConnection | None:
         async with self._session_factory() as session:
+            clauses = [
+                ProviderConnection.uid == uid,
+                ProviderConnection.is_deleted.is_(False),
+            ]
+            if owner_id is not None:
+                clauses.append(ProviderConnection.owner_id == owner_id)
             result = await session.execute(
-                select(ProviderConnection).where(
-                    ProviderConnection.uid == uid,
-                    ProviderConnection.is_deleted.is_(False),
-                ),
+                select(ProviderConnection).where(*clauses),
             )
             connection = result.scalar_one_or_none()
             if connection is None:
@@ -56,13 +76,16 @@ class ProviderConnectionRepository:
             await session.refresh(connection)
             return connection
 
-    async def delete(self, uid: str) -> bool:
+    async def delete(self, uid: str, *, owner_id: str | None = None) -> bool:
         async with self._session_factory() as session:
+            clauses = [
+                ProviderConnection.uid == uid,
+                ProviderConnection.is_deleted.is_(False),
+            ]
+            if owner_id is not None:
+                clauses.append(ProviderConnection.owner_id == owner_id)
             result = await session.execute(
-                select(ProviderConnection).where(
-                    ProviderConnection.uid == uid,
-                    ProviderConnection.is_deleted.is_(False),
-                ),
+                select(ProviderConnection).where(*clauses),
             )
             connection = result.scalar_one_or_none()
             if connection is None:

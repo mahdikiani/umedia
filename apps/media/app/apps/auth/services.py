@@ -20,6 +20,7 @@ from usso.lite import LiteAuth, LiteConfig
 from usso.lite.database import LiteDatabase
 from usso.lite.models import LocalUser
 from usso.lite.schemas import Identifier, LoginRequest, TokenPair
+from usso_jwt.exceptions import JWTError
 
 from .schemas import MIN_PASSWORD_LENGTH, UserSummary
 
@@ -197,6 +198,64 @@ class AuthService:
                 user_agent=user_agent,
                 ip=ip,
             )
+            return AuthResult(pair, user)
+
+    def oidc_providers(self) -> list[str]:
+        """Configured OIDC identity provider names (for ``GET /auth/state``)."""
+        return list(self._auth.config.oidc_providers)
+
+    def oidc_available(self) -> bool:
+        """Whether any OIDC identity provider is configured."""
+        return bool(self._auth.config.oidc_providers)
+
+    def start_oidc(self, provider: str = "google") -> dict:
+        """Begin an OIDC paste/localhost-redirect identity login."""
+        return self._auth.start_oidc(provider, self._auth._oidc_states)
+
+    async def login_with_oidc(
+        self,
+        *,
+        provider: str,
+        callback: str,
+        state: str | None,
+        user_agent: str | None,
+        ip: str | None,
+    ) -> AuthResult:
+        """Complete OIDC identity login from a pasted callback."""
+        async with self._database.session_maker() as session:
+            pair, user = await self._auth.login_with_oidc(
+                provider,
+                callback=callback,
+                state=state,
+                state_store=self._auth._oidc_states,
+                session=session,
+                user_agent=user_agent,
+                ip=ip,
+            )
+            return AuthResult(pair, user)
+
+    async def refresh(self, refresh_token: str) -> AuthResult:
+        """Rotate a refresh token and issue a new pair (usso.lite)."""
+        async with self._database.session_maker() as session:
+            try:
+                pair = await self._auth.refresh(refresh_token, session)
+            except JWTError:
+                raise USSOException(
+                    401,
+                    error_code="invalid_refresh_token",
+                    message={
+                        "en": "Refresh token is invalid.",
+                        "fa": "توکن تازه‌سازی نامعتبر است.",
+                    },
+                ) from None
+            payload = self._auth.verify_token(pair.access_token)
+            user = await self._auth.get_user(payload.uid, session)
+            if user is None:
+                raise USSOException(
+                    401,
+                    error_code="user_not_found",
+                    message={"en": "User not found", "fa": "کاربر پیدا نشد."},
+                )
             return AuthResult(pair, user)
 
     async def logout(self, refresh_token: str | None) -> None:

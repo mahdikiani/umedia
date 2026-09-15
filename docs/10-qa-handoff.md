@@ -60,12 +60,12 @@ Everything below is already tracked in `docs/09-tasks.md`'s Backlog.
 Mention them only if you find something *additionally* broken about them,
 not just that they're incomplete:
 
-- Google Drive OAuth and Telegram session connect flows: the
-  `connect_flow` field exists (`token`/`oauth`/`session`) but the actual
-  `oauth/start`, `oauth/callback`, `session/start`, `session/verify`
-  routes are **not built yet**. Both providers can currently only be
-  connected by manually pasting an already-obtained token/session string
-  into the generic form.
+- Google Drive OAuth: paste-flow routes exist (`POST /providers/oauth/start`
+  + `/complete`); requires `UMEDIA_GOOGLE_OAUTH_CLIENT_ID` /
+  `UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET` (and optional redirect URI). Telegram
+  session (`session/start` + `session/verify`) is **not built yet** — that
+  provider can currently only be connected by pasting an already-obtained
+  session string into the generic form.
 - `rclone`'s `s3` remote type: write path (`rcat`) unverified against
   real AWS/MinIO (blocked by a moto/AWS-SDK-v2 incompatibility in this
   environment, not our code — `list`/`stat`/`mkdir`/read all confirmed
@@ -77,9 +77,7 @@ not just that they're incomplete:
   otherwise don't file "telegram doesn't work" without a real attempt.
 - No full-text search, no WebDAV mount server, no viewer plugins, no
   dual-pane GUI, no HATEOAS links. All explicitly backlog, not oversights.
-- `usso` (auth library) is a vendored wheel, not a published PyPI
-  package — irrelevant to black-box testing, mentioned only so a
-  dependency-audit tool doesn't flag it as broken.
+- `usso` (auth library) is installed from PyPI (`usso[fastapi,lite]==0.32.9`).
 
 ## How to report back
 

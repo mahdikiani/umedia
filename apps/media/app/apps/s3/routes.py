@@ -58,10 +58,20 @@ async def s3_auth(request: Request) -> S3RequestContext:
 S3Context = Annotated[S3RequestContext, Depends(s3_auth)]
 
 
-def get_service(request: Request, context: S3Context) -> S3ObjectService:
+async def get_service(
+    request: Request, context: S3Context,
+) -> S3ObjectService:
     """An `S3ObjectService` scoped to the credential's owner."""
+    is_admin = False
+    auth = getattr(request.app.state, "auth_service", None)
+    if auth is not None:
+        summary = await auth.get_user_summary(context.identity.user_id)
+        if summary is not None:
+            is_admin = "admin" in (summary.roles or [])
     return build_s3_service(
-        request.app.state, user_id=context.identity.user_id,
+        request.app.state,
+        user_id=context.identity.user_id,
+        is_admin=is_admin,
     )
 
 

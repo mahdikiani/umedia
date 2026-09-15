@@ -38,7 +38,7 @@ MAX_KEYS_CAP = 1000
 class ConnectionListProtocol(Protocol):
     """The slice of `ProviderConnectionRepository` PutObject needs."""
 
-    async def list(self) -> list[Any]: ...
+    async def list(self, *, owner_id: str | None = None) -> list[Any]: ...
 
 
 def _etag(record: MediaFileRecord) -> str:
@@ -72,10 +72,12 @@ class S3ObjectService:
         user_id: str,
         media_files: MediaFileService,
         connections: ConnectionListProtocol,
+        is_admin: bool = False,
     ) -> None:
         self._user_id = user_id
         self._media_files = media_files
         self._connections = connections
+        self._is_admin = is_admin
 
     def validate_bucket(self, bucket: str) -> None:
         if bucket != Settings.S3_COMPAT_BUCKET:
@@ -107,9 +109,17 @@ class S3ObjectService:
         return matches[0]
 
     async def _upload_connection_id(self) -> str:
-        connections = await self._connections.list()
+        connections = await self._connections.list(owner_id=self._user_id)
         for connection in connections:
-            if getattr(connection, "enabled", True):
+            if not getattr(connection, "enabled", True):
+                continue
+            from apps.provider_connections.services import connection_usable_by
+
+            if connection_usable_by(
+                connection,
+                actor_user_id=self._user_id,
+                is_admin=self._is_admin,
+            ):
                 return connection.uid
         raise InvalidArgument("No storage provider configured")
 
@@ -293,6 +303,7 @@ class S3ObjectService:
                     name=segment,
                     parent_id=parent_id,
                     owner_id=self._user_id,
+                    is_admin=self._is_admin,
                 )
                 records.append(folder)
                 parent_id = folder.uid
@@ -307,6 +318,7 @@ class S3ObjectService:
                 content=body,
                 content_type=content_type,
                 owner_id=self._user_id,
+                is_admin=self._is_admin,
             )
         except (MediaFileWriteFailedError, MediaFileValidationError) as exc:
             raise InvalidArgument(str(exc.detail)) from exc

@@ -72,6 +72,7 @@ async def local_connection_id(
     tmp_path: Path,
 ) -> str:
     connection = await connections.create({
+        "owner_id": "test-owner",
         "provider_type": "local",
         "name": "Test Library",
         "encrypted_config": cipher.encrypt_json(

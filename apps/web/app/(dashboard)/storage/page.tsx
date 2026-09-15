@@ -1,12 +1,13 @@
 "use client";
 
-import { Database, FolderOpen, RefreshCw } from "lucide-react";
+import { FolderOpen, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
+import { FileTypeChip } from "@/components/file-type-chip";
+import { StorageProviderIcon } from "@/components/storage-provider-icon";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -298,12 +299,26 @@ function StorageBrowser() {
               value={selectedConnection.uid}
             >
               <SelectTrigger aria-label="Provider connection" className="w-52">
-                <SelectValue>{selectedConnection.name}</SelectValue>
+                <SelectValue>
+                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                    <StorageProviderIcon
+                      providerType={selectedConnection.provider_type}
+                      size="sm"
+                    />
+                    <span className="truncate">{selectedConnection.name}</span>
+                  </span>
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {connections.map((connection) => (
                   <SelectItem key={connection.uid} value={connection.uid}>
-                    {connection.name}
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <StorageProviderIcon
+                        providerType={connection.provider_type}
+                        size="sm"
+                      />
+                      <span className="truncate">{connection.name}</span>
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -363,7 +378,11 @@ function StorageBrowser() {
                   className="py-12 text-center text-sm text-muted-foreground"
                   colSpan={4}
                 >
-                  <Database className="mx-auto mb-3" size={20} />
+                  <StorageProviderIcon
+                    className="mx-auto mb-3"
+                    providerType={selectedConnection?.provider_type ?? "unknown"}
+                    size="md"
+                  />
                   {query
                     ? "No matching objects in this provider."
                     : "No indexed objects for this provider."}
@@ -386,11 +405,7 @@ function StorageBrowser() {
                   )}
                 </TableCell>
                 <TableCell>
-                  <Badge variant="secondary">
-                    {object.type === "folder"
-                      ? "Folder"
-                      : object.content_type || "application/octet-stream"}
-                  </Badge>
+                  <FileTypeChip item={object} />
                 </TableCell>
                 <TableCell className="max-w-md whitespace-normal break-all font-mono text-xs text-muted-foreground">
                   {object.content_reference}

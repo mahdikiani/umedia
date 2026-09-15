@@ -27,6 +27,47 @@ def test_s3_fs_builds_a_valid_connection_string() -> None:
     assert "access_key_id=AKIA" in fs
     assert "endpoint='http://127.0.0.1:5001'" in fs
     assert "force_path_style=true" in fs
+    assert "provider=Minio" in fs
+    assert "no_head=true" in fs
+    assert "no_check_bucket=true" in fs
+
+
+def test_s3_fs_detects_cloudflare_r2_from_endpoint() -> None:
+    fs = _s3_fs({
+        "access_key_id": "r2key",
+        "secret_access_key": "r2secret",
+        "bucket": "media",
+        "endpoint_url": "https://abc123.r2.cloudflarestorage.com",
+    })
+    assert "provider=Cloudflare" in fs
+    assert "region=auto" in fs
+    assert "endpoint='https://abc123.r2.cloudflarestorage.com'" in fs
+    assert "no_head=true" in fs
+    assert "no_check_bucket=true" in fs
+
+
+def test_s3_fs_defaults_aws_without_endpoint() -> None:
+    fs = _s3_fs({
+        "access_key_id": "AKIA",
+        "secret_access_key": "secret",
+        "bucket": "prod",
+        "region": "eu-west-1",
+    })
+    assert "provider=AWS" in fs
+    assert "endpoint=" not in fs
+    assert "no_head=" not in fs
+
+
+def test_s3_fs_ignores_placeholder_other_region() -> None:
+    fs = _s3_fs({
+        "access_key_id": "a",
+        "secret_access_key": "b",
+        "bucket": "x",
+        "endpoint_url": "https://rfs.example.com",
+        "region": "other-v2-signature",
+    })
+    assert "provider=Minio" in fs
+    assert "region=" not in fs
 
 
 def test_s3_fs_requires_credentials_and_bucket() -> None:
@@ -42,6 +83,18 @@ def test_google_drive_fs_builds_a_valid_connection_string() -> None:
     assert fs.startswith(":drive,")
     assert "token=oauth-token-json" in fs
     assert "root_folder_id=abc123" in fs
+
+
+def test_google_drive_fs_includes_client_id_and_secret_when_set() -> None:
+    fs = _google_drive_fs({
+        "token": '{"access_token":"a"}',
+        "client_id": "my-client",
+        "client_secret": "my-secret",
+        "root_folder_id": "folder",
+    })
+    assert "client_id=my-client" in fs
+    assert "client_secret=my-secret" in fs
+    assert "root_folder_id=folder" in fs
 
 
 def test_google_drive_fs_requires_a_token() -> None:

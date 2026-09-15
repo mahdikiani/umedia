@@ -22,6 +22,10 @@ def test_health_and_auth_bootstrap_routes_are_public() -> None:
     assert _is_public(request("/api/v1/auth/state"))
     assert _is_public(request("/api/v1/auth/setup", "POST"))
     assert _is_public(request("/api/v1/auth/sessions", "POST"))
+    assert _is_public(request("/api/v1/auth/refresh"))
+    assert _is_public(request("/api/v1/auth/refresh", "POST"))
+    assert _is_public(request("/api/v1/auth/oidc/start", "POST"))
+    assert _is_public(request("/api/v1/auth/oidc/complete", "POST"))
 
 
 def test_api_docs_are_public() -> None:
@@ -58,7 +62,27 @@ def test_s3_gateway_is_public_to_sigv4_for_every_method() -> None:
         assert _is_public(request("/api/v1/s3/file-1/photo.jpg", method))
 
 
+def test_file_type_statics_are_public_for_safe_methods_only() -> None:
+    """MIME icons are local files this app serves; <img> tags must load
+    them without a session, including on public share pages."""
+    assert _is_public(request("/api/v1/statics/folder-1485.svg"))
+    assert _is_public(request("/api/v1/statics/text_color_pdf.svg", "HEAD"))
+    assert not _is_public(request("/api/v1/statics/folder-1485.svg", "POST"))
+
+
 def test_resource_routes_require_authentication() -> None:
     assert not _is_public(request("/api/v1/resources"))
     assert not _is_public(request("/api/v1/resources/some-uid"))
     assert not _is_public(request("/api/v1/resources/some-uid/content"))
+
+
+def test_file_content_routes_are_public_for_safe_methods_only() -> None:
+    """Content URLs are session-optional so the route can 404 on deny
+    (existence stays private). Middleware must not 401 first."""
+    assert _is_public(request("/api/v1/files/some-uid/content"))
+    assert _is_public(request("/api/v1/files/some-uid/content", "HEAD"))
+    assert _is_public(request("/api/v1/files/some-uid/content/logo.png"))
+    assert not _is_public(request("/api/v1/files/some-uid/content/a/b.png", "HEAD"))
+    assert not _is_public(request("/api/v1/files/some-uid/content", "DELETE"))
+    assert not _is_public(request("/api/v1/files/some-uid"))
+    assert not _is_public(request("/api/v1/files"))

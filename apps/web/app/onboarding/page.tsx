@@ -10,14 +10,15 @@ import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { api, type AuthState, type ProviderConnection, type ProviderType } from "@/lib/api";
 import { useCopy } from "@/lib/copy";
+import { readLastLocation } from "@/lib/last-location";
 
 /** The mandatory first step after setup/login: `(dashboard)/layout.tsx`
- * redirects here whenever an authenticated admin has zero provider
+ * redirects here whenever an authenticated user has zero provider
  * connections, since every other screen (Files especially) is
  * meaningless without at least one -- rather than dropping them into an
  * empty sidebar shell with a buried "Add storage" button. This page
  * mirrors that redirect the other way: once a connection exists, it
- * sends the admin on to `/home` instead of showing itself again. */
+ * sends them to their last dashboard page (fallback `/home`). */
 export default function OnboardingPage() {
   const router = useRouter();
   const { locale } = useLocale();
@@ -36,12 +37,16 @@ export default function OnboardingPage() {
         return Promise.all([
           api<ProviderType[]>("/provider-types"),
           api<ProviderConnection[]>("/providers"),
-        ]).then(([types, connections]) => {
+          Promise.resolve(state),
+        ]).then(([types, connections, auth]) => {
           if (connections.length > 0) {
-            router.replace("/home");
+            router.replace(readLastLocation());
             return;
           }
-          setProviderTypes(types);
+          const admin = auth.user?.roles.includes("admin") ?? false;
+          setProviderTypes(
+            admin ? types : types.filter((item) => item.id !== "local"),
+          );
           setReady(true);
         });
       })
@@ -85,7 +90,7 @@ export default function OnboardingPage() {
 
         <div className="mt-8 rounded-xl border bg-card p-6">
           <AddStorageForm
-            onCreated={() => router.replace("/home")}
+            onCreated={() => router.replace(readLastLocation())}
             providerTypes={providerTypes}
           />
         </div>

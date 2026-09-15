@@ -181,30 +181,34 @@ already speaks well, rather than hand-maintaining a bespoke async client.
   connection config, translated to rclone's config keys) is generated
   on-the-fly per call, never written to disk.
 
-  **Google Drive OAuth — investigated, doesn't fit, core hand-builds it.**
-  Checked rclone rcd's own OAuth support first, as planned:
-  `config/create --non-interactive` and `rclone authorize` both exist, but
-  both assume rclone owns a **local config file on the same machine as the
-  browser** — exactly backwards from our topology (headless server,
-  admin's browser is a separate device hitting our web UI) — and
-  `config/create` writes the result to rclone's on-disk config, which our
-  design deliberately never does (credentials live only in the core's
-  encrypted `ProviderConnection.encrypted_config`, decrypted and attached
-  per-call). So: the core hand-builds a standard OAuth2 authorization-code
-  flow (`POST /providers/{uid}/oauth/start` redirects the admin's browser
-  to Google; `GET /providers/{uid}/oauth/callback` completes it) using a
-  generic OAuth2 client library (e.g. `authlib`) — not rclone at all for
-  this part. The payoff for checking first: rclone's `drive` backend's
-  `token` config field is documented as "OAuth Access Token as a JSON
-  blob" — the standard `golang.org/x/oauth2` token shape
-  (`access_token`/`token_type`/`refresh_token`/`expiry`), which is also
-  exactly what Python OAuth2 clients produce. The core's callback route
-  just serializes the token response into that shape and stores it as the
-  connection's `token` field — the `rclone` plugin built this phase
-  already consumes it as-is, zero plugin-side changes needed once that
-  route exists. Building the route itself is deferred to Phase 4/5 (there's
-  no core-side `ProviderConnection` HTTP surface wired to the new plugin
-  registry yet for it to hang off of) — tracked in `docs/09-tasks.md`.
+  **Google Drive OAuth — localhost-redirect paste flow (not a server
+  callback).** rclone rcd's own OAuth (`config/create`, `rclone authorize`)
+  assumes a browser on the same host as rclone and writes to rclone's
+  on-disk config — backwards from our headless-server topology, and we
+  never write credentials to rclone's config. Instead the core owns a
+  standard authorization-code flow that never needs Google to hit the
+  UMedia server:
+
+  1. `POST /providers/oauth/start` builds Google's authorize URL
+     (`access_type=offline`, `prompt=consent`, Drive scope) and stores a
+     short-lived CSRF `state` in memory (`app.state.oauth_states`;
+     single-container — multi-replica needs a shared store later).
+  2. The UI shows the URL (open popup / copy). The user signs in; Google
+     redirects to the configured redirect URI (default `http://localhost`).
+  3. The user pastes whatever landed in the browser — full redirect URL,
+     query string, bare `code`, or a ready token JSON — into
+     `POST /providers/oauth/complete`.
+  4. The core validates `state` (skipped for token-JSON pastes), exchanges
+     the code at Google's token endpoint when needed, serializes the
+     result into rclone's documented `token` JSON blob
+     (`access_token`/`token_type`/`refresh_token`/`expiry` RFC3339), and
+     creates the `ProviderConnection` with `token` + `client_id` +
+     `client_secret` (+ optional `root_folder_id`). The rclone plugin
+     consumes that config as-is via the inline connection string.
+
+  Env: `UMEDIA_GOOGLE_OAUTH_CLIENT_ID` / `UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET`
+  (aliases `GOOGLE_OAUTH_CLIENT_*`) and optional
+  `UMEDIA_GOOGLE_OAUTH_REDIRECT_URI` (default `http://localhost`).
 - `telegram` — Telethon, ports `apps/api/providers/telegram.py`. Native:
   rclone has no Telegram backend.
 

@@ -67,14 +67,11 @@ class PluginManifest(BaseModel):
         default="token",
         description=(
             "Which sub-flow a frontend should offer to configure this "
-            "provider type: 'token' (today's single POST /providers, "
-            "config known upfront -- local, s3), 'oauth' (redirect-based, "
-            "e.g. google_drive), or 'session' (multi-step interactive "
-            "sign-in, e.g. telegram: phone -> code -> maybe 2FA). Purely "
-            "descriptive for now -- see docs/09-tasks.md for the "
-            "oauth/session sub-flow endpoints this sets up for, not yet "
-            "built; every provider type is still created through the "
-            "one 'token' flow regardless of this value."
+            "provider type: 'token' (single POST /providers with config "
+            "fields — local, s3), 'oauth' (localhost-redirect paste flow "
+            "via /providers/oauth/start + /complete — google_drive), or "
+            "'session' (multi-step interactive sign-in, e.g. telegram: "
+            "phone -> code -> maybe 2FA; not built yet)."
         ),
     )
 

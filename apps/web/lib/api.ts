@@ -36,6 +36,21 @@ export type AuthState = {
   configured: boolean;
   authenticated: boolean;
   user?: AuthUser | null;
+  /** Configured OIDC identity providers (e.g. `["google"]`). Not Drive OAuth. */
+  oidc_providers?: string[];
+};
+
+export type OidcStartResponse = {
+  provider: string;
+  authorization_url: string;
+  state: string;
+  redirect_uri: string;
+};
+
+export type OidcCompleteResponse = AuthState & {
+  access_token: string;
+  token_type?: string;
+  expires_in: number;
 };
 
 export type ProviderField = {
@@ -55,14 +70,22 @@ export type ProviderType = {
   status: "available" | "beta" | "planned";
   capabilities: string[];
   fields: ProviderField[];
-  // "oauth"/"session" sub-flow endpoints aren't built yet -- every
-  // provider type is still created through the plain "token" form
-  // regardless of this value. See plugins/manifest.py's own field.
+  // "token" → POST /providers with config fields; "oauth" → paste-flow
+  // via /providers/oauth/start + /complete (Google Drive); "session"
+  // (Telegram) not built yet.
   connect_flow: "token" | "oauth" | "session";
+};
+
+export type OAuthStartResponse = {
+  provider_type: string;
+  authorization_url: string;
+  state: string;
+  redirect_uri: string;
 };
 
 export type ProviderConnection = {
   uid: string;
+  owner_id?: string;
   provider_type: string;
   name: string;
   status: string;
@@ -134,7 +157,75 @@ export type VolumeStats = {
   folder_count: number;
 };
 
+export type PlacementPolicy = "default" | "fill_order" | "most_free";
+
+export type PlacementSettings = {
+  policy: PlacementPolicy;
+  default_connection_id: string | null;
+  fill_order: string[];
+};
+
 export class ApiError extends Error {}
+
+let refreshPromise: Promise<boolean> | null = null;
+
+/** Single-flight silent refresh for browser sessions (usso cookie-mode).
+ * POST with credentials sends the HttpOnly `usso-refresh-token` cookie;
+ * GET is supported too for usso.lite parity. Never call from auth bootstrap
+ * routes themselves. */
+async function tryRefreshSession(): Promise<boolean> {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch("/api/v1/auth/refresh", {
+        credentials: "include",
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (response.ok) {
+        return true;
+      }
+      const fallback = await fetch("/api/v1/auth/refresh", {
+        credentials: "include",
+        method: "GET",
+      });
+      return fallback.ok;
+    } catch {
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
+}
+
+async function fetchWithOptionalRefresh(
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const doFetch = () =>
+    fetch(`/api/v1${path}`, {
+      credentials: "include",
+      ...init,
+    });
+  let response = await doFetch();
+  if (
+    response.status === 401 &&
+    path !== "/auth/refresh" &&
+    !path.startsWith("/auth/sessions") &&
+    path !== "/auth/setup" &&
+    path !== "/auth/state"
+  ) {
+    const refreshed = await tryRefreshSession();
+    if (refreshed) {
+      response = await doFetch();
+    }
+  }
+  return response;
+}
 
 /** The backend's error body is inconsistent about `message`'s shape:
  * apps/media's own custom errors (ResourceNotFoundError, etc.) send a
@@ -174,17 +265,33 @@ export function extractErrorMessage(body: unknown): string {
 /** JSON request/response -- auth, /providers list/delete, and anywhere
  * else the body isn't a file upload. */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "include",
+  const requestInit = {
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
-  });
+  } satisfies RequestInit;
+  let response = await fetchWithOptionalRefresh(path, requestInit);
   if (!response.ok) {
     const error = await response.json().catch(() => null);
     throw new ApiError(extractErrorMessage(error));
   }
   if (response.status === 204) return undefined as T;
-  return response.json();
+  const body: T = await response.json();
+  if (
+    path === "/auth/state" &&
+    typeof body === "object" &&
+    body !== null &&
+    "authenticated" in body &&
+    body.authenticated === false &&
+    (await tryRefreshSession())
+  ) {
+    response = await fetchWithOptionalRefresh(path, requestInit);
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      throw new ApiError(extractErrorMessage(error));
+    }
+    return response.json();
+  }
+  return body;
 }
 
 /** `multipart/form-data` request -- uploads and library-folder creation
@@ -196,8 +303,7 @@ export async function apiForm<T>(
   method: "POST" | "PUT",
   form: FormData,
 ): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: "include",
+  const response = await fetchWithOptionalRefresh(path, {
     method,
     body: form,
   });
@@ -209,9 +315,10 @@ export async function apiForm<T>(
   return response.json();
 }
 
-/** A single trailing path segment for file URLs -- cosmetic for browsers
- * / download names; servers resolve by `uid` only. Slashes are flattened
- * so the segment never looks like a nested path. */
+/** A single trailing filename segment for content URLs -- cosmetic for
+ * browsers / download names; servers resolve by `uid` only. Slashes are
+ * flattened so it stays one path segment (`{filename}`, not a nested
+ * `{filepath:path}`). */
 export function fileUrlFilename(name: string): string {
   const cleaned = name.replace(/[/\\]+/g, "_").trim() || "file";
   return encodeURIComponent(cleaned);
@@ -221,10 +328,21 @@ export function fileUrlFilename(name: string): string {
  * plain `<a href>` (same-origin, cookie-authenticated) rather than
  * through `api()`, since the browser should stream/download it directly
  * instead of the app buffering it in memory first. Optional `filename`
- * is appended as a dummy trailing segment for nicer downloads. */
-export function fileContentUrl(uid: string, filename?: string): string {
+ * is one cosmetic segment (`/content/{filename}`). Default is inline;
+ * pass `{ download: true }` to force a save dialog via `?download=1`. */
+export function fileContentUrl(
+  uid: string,
+  filename?: string,
+  options?: { download?: boolean },
+): string {
   const base = `/api/v1/files/${uid}/content`;
-  return filename ? `${base}/${fileUrlFilename(filename)}` : base;
+  const path = filename ? `${base}/${fileUrlFilename(filename)}` : base;
+  return options?.download ? `${path}?download=1` : path;
+}
+
+/** Force download (Content-Disposition: attachment) for the ⋮ menu. */
+export function fileDownloadUrl(uid: string, filename?: string): string {
+  return fileContentUrl(uid, filename, { download: true });
 }
 
 export function resourceContentUrl(uid: string, filename?: string): string {
@@ -269,4 +387,68 @@ export function createTemporaryLink(
     method: "POST",
     body: JSON.stringify({ expires_in: expiresInSeconds }),
   });
+}
+
+/** Library move/copy job from `POST/GET /files/transfers`. */
+export type TransferJob = {
+  uid: string;
+  operation: "move" | "copy" | string;
+  status: "queued" | "running" | "completed" | "partial" | "failed" | string;
+  source_ids: string[];
+  dest_parent_id: string | null;
+  total_items: number;
+  done_items: number;
+  failed_items: number;
+  progress_pct: number;
+  current_name: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type TransferCreate = {
+  operation: "move" | "copy";
+  source_ids: string[];
+  dest_parent_id: string | null;
+  conflict?: "rename" | "skip";
+};
+
+export function createTransfer(body: TransferCreate): Promise<TransferJob> {
+  return api<TransferJob>("/files/transfers", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function listTransfers(): Promise<TransferJob[]> {
+  return api<TransferJob[]>("/files/transfers");
+}
+
+export function getTransfer(uid: string): Promise<TransferJob> {
+  return api<TransferJob>(`/files/transfers/${uid}`);
+}
+
+export function listTemporary(): Promise<MediaFileItem[]> {
+  return api<MediaFileItem[]>("/files/temporary");
+}
+
+export function addToTemporary(ids: string[]): Promise<void> {
+  if (ids.length === 0) return Promise.resolve();
+  return api<void>("/files/temporary", {
+    method: "POST",
+    body: JSON.stringify({ media_file_ids: ids }),
+  });
+}
+
+export function removeFromTemporary(id: string): Promise<void> {
+  return api<void>(`/files/temporary/${id}`, { method: "DELETE" });
+}
+
+export function clearTemporary(): Promise<void> {
+  return api<void>("/files/temporary", { method: "DELETE" });
+}
+
+export function isTransferInFlight(status: string): boolean {
+  return status === "queued" || status === "running";
 }

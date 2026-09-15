@@ -1,8 +1,9 @@
 "use client";
 
-import { Database } from "lucide-react";
 import { useState } from "react";
 
+import { GoogleDriveOauthForm } from "@/components/google-drive-oauth-form";
+import { StorageProviderIcon } from "@/components/storage-provider-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +18,7 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive"> = {
 
 /** The provider-type picker + connect-config form, shared by the
  * onboarding flow's first step and Settings' "Add storage" dialog -- one
- * implementation of `POST /providers`, not two. */
+ * implementation of `POST /providers` (and oauth complete), not two. */
 export function AddStorageForm({
   providerTypes,
   onCreated,
@@ -76,9 +77,7 @@ export function AddStorageForm({
             type="button"
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="grid size-9 place-items-center rounded-lg bg-muted">
-                <Database size={16} />
-              </div>
+              <StorageProviderIcon providerType={provider.id} size="md" />
               <Badge variant={statusVariant[provider.status] ?? "secondary"}>
                 {provider.status}
               </Badge>
@@ -90,6 +89,17 @@ export function AddStorageForm({
           </button>
         ))}
       </div>
+    );
+  }
+
+  if (selected.connect_flow === "oauth") {
+    return (
+      <GoogleDriveOauthForm
+        onBack={() => setSelectedId(null)}
+        onCancel={onCancel}
+        onCreated={onCreated}
+        provider={selected}
+      />
     );
   }
 
@@ -140,6 +150,7 @@ export function AddStorageForm({
         <div className="flex items-start gap-3">
           <input
             className="mt-0.5 size-4 shrink-0 accent-primary"
+            defaultChecked
             id="import_existing"
             name="import_existing"
             type="checkbox"
@@ -149,7 +160,9 @@ export function AddStorageForm({
               Import existing objects from provider
             </Label>
             <p className="text-xs leading-5 text-muted-foreground">
-              Add objects already stored by this provider to your UMedia library.
+              Pull files and folders already in the bucket into your library
+              (under a folder named after this connection). Leave off for an
+              empty library that only receives new uploads.
             </p>
           </div>
         </div>

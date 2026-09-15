@@ -51,6 +51,7 @@ async def test_creating_a_local_connection_round_trips_through_the_real_plugin(
     body = response.json()
     assert body["provider_type"] == "local"
     assert body["status"] == "configured"
+    assert body["owner_id"]
     # The plugin's own connect() actually ran: it creates the directory as
     # part of validating read/write access (plugins/local/backend.py).
     assert library.is_dir()
@@ -177,10 +178,150 @@ async def test_disabled_connection_rejects_resource_operations(
         files={"file": ("should-fail.txt", b"x", "text/plain")},
     )
 
-    # MediaFileService.upload() wraps any exception from the plugin
-    # gateway -- including this upfront validation one -- into a generic
-    # 400 MediaFileWriteFailedError; same pre-existing behavior the
-    # Resource layer had (an unknown provider_connection_id gets the
-    # same treatment).
-    assert response.status_code == 400
+    # Placement rejects a disabled preferred connection before the plugin
+    # gateway runs (MediaFileValidationError → 422).
+    assert response.status_code == 422
     assert "disabled" in response.text
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_see_or_edit_anothers_connection(
+    client: httpx.AsyncClient,
+) -> None:
+    await _authenticated(client)
+    library = Path(os.environ["UMEDIA_DATA_DIR"]) / "storage" / "owner-a-library"
+    created = await client.post(
+        "/providers",
+        json={
+            "provider_type": "local",
+            "name": "Admin library",
+            "config": {"root_path": str(library)},
+        },
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+    admin_uid = created.json()["owner_id"]
+
+    member_credentials = {
+        "email": "provider-member@example.com",
+        "password": "a secure member password",
+    }
+    created_user = await client.post(
+        "/users", json={**member_credentials, "role": "user"},
+    )
+    assert created_user.status_code == 201, created_user.text
+
+    member = httpx.AsyncClient(
+        transport=client._transport, base_url=str(client.base_url),
+    )
+    async with member:
+        login = await member.post("/auth/sessions", json=member_credentials)
+        assert login.status_code == 201, login.text
+
+        listed = await member.get("/providers")
+        assert listed.status_code == 200
+        assert all(item["uid"] != uid for item in listed.json())
+
+        types = await member.get("/provider-types")
+        assert types.status_code == 200
+        assert all(item["id"] != "local" for item in types.json())
+
+        blocked_local = await member.post(
+            "/providers",
+            json={
+                "provider_type": "local",
+                "name": "Nope",
+                "config": {"root_path": str(library / "member")},
+            },
+        )
+        assert blocked_local.status_code == 403
+        assert blocked_local.json()["error_code"] == "local_admin_required"
+
+        assert (await member.patch(
+            f"/providers/{uid}", json={"name": "Hijack"},
+        )).status_code == 404
+        assert (await member.delete(f"/providers/{uid}")).status_code == 404
+        assert (await member.get(f"/providers/{uid}/objects")).status_code == 404
+        assert (await member.get(f"/providers/{uid}/sync")).status_code == 404
+        assert (await member.post(f"/providers/{uid}/sync")).status_code == 404
+
+    admin_list = await client.get("/providers")
+    match = next(item for item in admin_list.json() if item["uid"] == uid)
+    assert match["owner_id"] == admin_uid
+    assert match["name"] == "Admin library"
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_sync_or_browse_owned_local_connection(
+    client: httpx.AsyncClient,
+) -> None:
+    """Even if a local row is somehow owned by a member, sync/objects
+    must refuse — same rule as placement (`connection_usable_by`)."""
+    await _authenticated(client)
+    member_credentials = {
+        "email": "local-leftover@example.com",
+        "password": "a secure member password",
+    }
+    created_user = await client.post(
+        "/users", json={**member_credentials, "role": "user"},
+    )
+    assert created_user.status_code == 201, created_user.text
+    member_uid = created_user.json()["uid"]
+
+    library = (
+        Path(os.environ["UMEDIA_DATA_DIR"]) / "storage" / "leftover-local-library"
+    )
+    created = await client.post(
+        "/providers",
+        json={
+            "provider_type": "local",
+            "name": "Leftover local",
+            "config": {"root_path": str(library)},
+        },
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+
+    from apps.provider_connections.repository import ProviderConnectionRepository
+    from server.server import app as fastapi_app
+
+    reassigned = await ProviderConnectionRepository(
+        fastapi_app.state.session_factory,
+    ).update(uid, {"owner_id": member_uid})
+    assert reassigned is not None
+    assert reassigned.owner_id == member_uid
+
+    member = httpx.AsyncClient(
+        transport=client._transport, base_url=str(client.base_url),
+    )
+    async with member:
+        login = await member.post("/auth/sessions", json=member_credentials)
+        assert login.status_code == 201, login.text
+        assert (await member.get(f"/providers/{uid}/objects")).status_code == 404
+        assert (await member.get(f"/providers/{uid}/sync")).status_code == 404
+        assert (await member.post(f"/providers/{uid}/sync")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_owner_can_sync_their_connection(
+    client: httpx.AsyncClient,
+) -> None:
+    await _authenticated(client)
+    library = Path(os.environ["UMEDIA_DATA_DIR"]) / "storage" / "sync-owner-library"
+    created = await client.post(
+        "/providers",
+        json={
+            "provider_type": "local",
+            "name": "Syncable",
+            "config": {"root_path": str(library)},
+        },
+    )
+    uid = created.json()["uid"]
+
+    status = await client.get(f"/providers/{uid}/sync")
+    assert status.status_code == 200, status.text
+    assert status.json()["status"] == "idle"
+
+    accepted = await client.post(f"/providers/{uid}/sync")
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["connection_id"] == uid

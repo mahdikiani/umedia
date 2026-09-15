@@ -76,6 +76,39 @@ class Settings(config.Settings):
             ),
         ),
     )
+    # How often the inbound Storage→library poller walks every enabled
+    # connection (same reconcile as POST /providers/{uid}/sync). Default
+    # 15 minutes. Manual POST always runs immediately regardless.
+    sync_poll_interval_seconds: int = dataclasses.field(
+        default_factory=lambda: int(
+            os.getenv("UMEDIA_SYNC_POLL_INTERVAL_SECONDS", "900"),
+        ),
+    )
+
+    # Google Drive OAuth (localhost-redirect paste flow). Prefer the
+    # UMEDIA_* names; bare GOOGLE_* aliases are accepted for convenience.
+    google_oauth_client_id: str = dataclasses.field(
+        default_factory=lambda: os.getenv(
+            "UMEDIA_GOOGLE_OAUTH_CLIENT_ID",
+            os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""),
+        ),
+    )
+    google_oauth_client_secret: str = dataclasses.field(
+        default_factory=lambda: os.getenv(
+            "UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET",
+            os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+        ),
+    )
+    google_oauth_redirect_uri: str = dataclasses.field(
+        default_factory=lambda: os.getenv(
+            "UMEDIA_GOOGLE_OAUTH_REDIRECT_URI",
+            "http://localhost",
+        ),
+    )
+    # Identity login callback (separate from Drive storage OAuth paste flow).
+    google_oidc_redirect_uri: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_OIDC_REDIRECT_URI", ""),
+    )
 
     # Storage backend configuration
     STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "local")  # s3, local, nextcloud

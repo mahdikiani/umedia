@@ -34,14 +34,11 @@ dependencies = [
     # locking, real chunk-streamed writes) before pinning it; re-audit
     # before bumping. See apps/resources/uploads.py.
     "tuspyserver==4.2.13",
-    # Vendored wheel: usso.lite is uncommitted local work, not yet on
-    # PyPI, and a `path =` source pointing outside this directory doesn't
-    # exist inside the Docker build context. vendor/usso-*.whl is a
-    # locally-built snapshot (`cd ~/Projects/pkgs/usso && uv build --wheel`,
-    # copy the output here) -- re-vendor to pick up changes. See
-    # docs/09-tasks.md Backlog: "Publish usso ... switch ... to a pinned
-    # release" once it ships, which replaces this entirely.
-    "usso[fastapi,lite]",
+    # Pinned exact (`==`, not `>=`): usso ships auth + usso.lite; we rely on
+    # cookie refresh, agent JWT kid alignment, OIDC identity login (0.33.x),
+    # and lite APIs — re-audit before bumping. Published on PyPI
+    # (ussoio/usso-python).
+    "usso[fastapi,lite]==0.33.0",
     "uvicorn>=0.38.0",
 ]
 
@@ -110,7 +107,6 @@ quote-style = "double"
 
 [tool.uv.sources]
 accounting = { workspace = true }
-usso = { path = "vendor/usso-0.32.0-py3-none-any.whl" }
 
 [tool.mypy]
 python_version = "3.13"

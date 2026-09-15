@@ -11,6 +11,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme as ToasterProps["theme"]}
       className="toaster group"
+      // Keep clear of the fixed Temporary clipboard dock (bottom-end).
+      position="top-center"
+      closeButton
       icons={{
         success: (
           <CircleCheckIcon className="size-4" />

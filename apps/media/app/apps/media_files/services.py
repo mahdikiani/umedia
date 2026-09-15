@@ -17,7 +17,10 @@ The invariants this module owns:
   unchanged.
 - **Import is idempotent.** plugin list -> upsert StorageObjects ->
   MediaFiles under a connection-named library root; an object already
-  linked is never imported twice.
+  linked is never imported twice. A complete walk marks unseen index
+  rows `missing` and soft-deletes their MediaFiles; they restore to the
+  same uid if the remote object reappears. A failed/partial listing
+  never marks missing.
 - **Deletes are library-first.** Soft-delete cascades through the folder
   tree; even a permanent delete removes only the MediaFile row and its
   links -- the StorageObject and the remote bytes stay (doc 11 v1 rule).
@@ -26,6 +29,7 @@ The invariants this module owns:
 import asyncio
 import dataclasses
 import hashlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -39,6 +43,7 @@ from plugins.contracts import CreateResourceIn, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
 from utils.pagination import Page
 
+from .content_type import index_content_type
 from .errors import (
     MediaFileNotFoundError,
     MediaFilePermissionError,
@@ -46,9 +51,14 @@ from .errors import (
     MediaFileValidationError,
     MediaFileWriteFailedError,
 )
-from .permissions import PermissionEnum, can_read, effective_permission
+from .legacy_staging import is_legacy_staging_folder
+from .permissions import PermissionEnum, can_open_content, can_read, effective_permission
+from .placement import PlacementSettings, pick_connection
+from .provider_layout import (
+    is_umedia_managed_reference,
+    plugin_upload_parent,
+)
 from .schemas import (
-    DEFAULT_CONTENT_TYPE,
     DIRECTORY_CONTENT_TYPE,
     HistoryEntry,
     MediaFileRecord,
@@ -97,7 +107,7 @@ class MediaFileRepositoryProtocol(Protocol):
         include_deleted: bool = False,
         sort: str = "name",
         order: str = "asc",
-    ) -> list[MediaFileRecord]: ...
+    ) -> "list[MediaFileRecord]": ...
     async def list_visible(
         self,
         *,
@@ -128,6 +138,28 @@ class MediaFileRepositoryProtocol(Protocol):
         actor_user_id: str,
         media_file_uids: "list[str]",
     ) -> set[str]: ...
+    async def add_temporary_item(
+        self,
+        *,
+        actor_user_id: str,
+        media_file_uid: str,
+    ) -> bool: ...
+    async def list_temporary_items(
+        self,
+        *,
+        actor_user_id: str,
+    ) -> "list[MediaFileRecord]": ...
+    async def remove_temporary_item(
+        self,
+        *,
+        actor_user_id: str,
+        media_file_uid: str,
+    ) -> None: ...
+    async def clear_temporary_items(
+        self,
+        *,
+        actor_user_id: str,
+    ) -> None: ...
     async def update(
         self,
         uid: str,
@@ -162,8 +194,12 @@ class MediaFileRepositoryProtocol(Protocol):
         self,
         *,
         provider_connection_id: str,
-        owner_id: str,
+        owner_id: str | None = None,
     ) -> MediaFileRecord | None: ...
+    async def list_for_connection(
+        self,
+        provider_connection_id: str,
+    ) -> "list[MediaFileRecord]": ...
 
 
 class StorageObjectRepositoryProtocol(Protocol):
@@ -237,10 +273,15 @@ class PluginGatewayProtocol(Protocol):
 
 
 class ConnectionRepositoryProtocol(Protocol):
-    """The slice of `ProviderConnection` this service reads: identity and
-    the two dual-layer flags."""
+    """The slice of `ProviderConnection` this service reads: identity,
+    provider type (local dump namespacing), and the two dual-layer flags."""
 
     async def get(self, uid: str) -> Any | None: ...  # noqa: ANN401
+    async def list(self) -> list[Any]: ...
+
+
+class InstanceSettingsRepositoryProtocol(Protocol):
+    async def get(self) -> PlacementSettings: ...
 
 
 class AccessKeyRecordProtocol(Protocol):
@@ -301,6 +342,7 @@ class MediaFileService(MediaFileSearchMixin):
         connections: ConnectionRepositoryProtocol,
         *,
         access_keys: AccessKeyServiceProtocol | None = None,
+        settings: "InstanceSettingsRepositoryProtocol | None" = None,
     ) -> None:
         self._files = files
         self._objects = objects
@@ -311,13 +353,115 @@ class MediaFileService(MediaFileSearchMixin):
         #: Optional so contexts that never mint (the trash purge worker)
         #: need not carry it.
         self._access_keys = access_keys
+        self._settings = settings
+
+    async def _bound_connection(self, folder_id: str) -> str | None:
+        """Walk toward the library root until a folder names a connection."""
+        cursor_id: str | None = folder_id
+        seen: set[str] = set()
+        while cursor_id and cursor_id not in seen:
+            seen.add(cursor_id)
+            record = await self._files.get(cursor_id)
+            if record is None:
+                return None
+            if record.provider_connection_id:
+                return record.provider_connection_id
+            cursor_id = record.parent_id
+        return None
+
+    async def resolve_placement(
+        self,
+        *,
+        parent_id: str | None,
+        preferred_connection_id: str | None = None,
+        actor_user_id: str,
+        is_admin: bool = False,
+    ) -> str:
+        """The connection a new file/folder under `parent_id` should use.
+
+        Only connections the actor owns (and may use -- `local` requires
+        admin) are candidates. An explicit preferred id that is missing,
+        unowned, or otherwise unusable is rejected rather than silently
+        ignored.
+        """
+        from apps.provider_connections.services import connection_usable_by
+
+        parent_connection_id = None
+        if parent_id is not None:
+            parent_connection_id = await self._bound_connection(parent_id)
+        settings = (
+            await self._settings.get()
+            if self._settings is not None
+            else PlacementSettings()
+        )
+        owned = [
+            connection
+            for connection in await self._connections.list(
+                owner_id=actor_user_id,
+            )
+            if connection_usable_by(
+                connection,
+                actor_user_id=actor_user_id,
+                is_admin=is_admin,
+            )
+        ]
+        enabled = [
+            connection.uid
+            for connection in owned
+            if getattr(connection, "enabled", True)
+        ]
+        if preferred_connection_id and parent_connection_id is None:
+            preferred = await self._connections.get(preferred_connection_id)
+            if preferred is None or not connection_usable_by(
+                preferred,
+                actor_user_id=actor_user_id,
+                is_admin=is_admin,
+            ):
+                raise MediaFileValidationError(
+                    f"Unknown provider_connection_id '{preferred_connection_id}'",
+                )
+            if not getattr(preferred, "enabled", True):
+                raise MediaFileValidationError(
+                    f"Provider connection '{preferred_connection_id}' is disabled",
+                )
+        if parent_connection_id is not None:
+            parent_conn = await self._connections.get(parent_connection_id)
+            if parent_conn is None or not connection_usable_by(
+                parent_conn,
+                actor_user_id=actor_user_id,
+                is_admin=is_admin,
+            ):
+                raise MediaFileValidationError(
+                    "This folder's storage is disabled or missing",
+                )
+            if parent_connection_id not in enabled:
+                enabled.append(parent_connection_id)
+        picked = pick_connection(
+            settings=settings,
+            enabled_ids=enabled,
+            parent_connection_id=parent_connection_id,
+            preferred_connection_id=(
+                None if parent_connection_id else preferred_connection_id
+            ),
+        )
+        if parent_id is not None and parent_connection_id is None:
+            await self._files.update(
+                parent_id, {"provider_connection_id": picked},
+            )
+        return picked
+
+    async def _provider_type(self, provider_connection_id: str) -> str | None:
+        connection = await self._connections.get(provider_connection_id)
+        if connection is None:
+            return None
+        return getattr(connection, "provider_type", None)
 
     async def _with_starred(
         self,
         records: list[MediaFileRecord],
         *,
         actor_user_id: str,
-    ) -> list[MediaFileRecord]:
+    ) -> "list[MediaFileRecord]":
         starred_ids = await self._files.starred_ids(
             actor_user_id=actor_user_id,
             media_file_uids=[record.uid for record in records],
@@ -331,6 +475,17 @@ class MediaFileService(MediaFileSearchMixin):
     # Access control primitives (ported from ResourceService)
     # ------------------------------------------------------------------
 
+    async def _is_under_legacy_staging(self, record: MediaFileRecord) -> bool:
+        """True when `record` is the old Temporary folder or lives under it."""
+        current: MediaFileRecord | None = record
+        while current is not None:
+            if is_legacy_staging_folder(current):
+                return True
+            if current.parent_id is None:
+                return False
+            current = await self._files.get(current.parent_id)
+        return False
+
     async def _get_visible(
         self,
         uid: str,
@@ -343,6 +498,8 @@ class MediaFileService(MediaFileSearchMixin):
         learn that its uid exists)."""
         record = await self._files.get(uid)
         if record is None or (record.is_deleted and not include_deleted):
+            raise MediaFileNotFoundError(uid)
+        if await self._is_under_legacy_staging(record):
             raise MediaFileNotFoundError(uid)
         if not can_read(record, actor_user_id):
             raise MediaFileNotFoundError(uid)
@@ -390,6 +547,10 @@ class MediaFileService(MediaFileSearchMixin):
             raise MediaFilePermissionError(
                 f"WRITE permission is required to add files to '{parent_id}'",
             )
+        if is_legacy_staging_folder(parent):
+            raise MediaFileValidationError(
+                "Temporary is a pointer clipboard, not a library folder",
+            )
         return parent
 
     # ------------------------------------------------------------------
@@ -404,17 +565,22 @@ class MediaFileService(MediaFileSearchMixin):
         uid: str,
         *,
         actor_user_id: str | None,
+        caller_workspace_ids: list[str] | None = None,
     ) -> MediaFileRecord:
-        """The `/f/{uid}` visibility rule: permanently public
-        (`public_permission == "read"`), or the (optional) authenticated
-        caller holds READ via the ACL. Temporary shares use the S3
-        gateway's SigV4-presigned URLs instead of query params here."""
+        """Content-URL open gate for `/f/{uid}` and `/files/{uid}/content`.
+
+        Allows owner / ACL share / workspace membership / permanent public.
+        Short-lived links are SigV4 on `/s3/...`, not this path. Deny is
+        always `MediaFileNotFoundError` (404) -- never confirm the uid.
+        """
         record = await self._files.get(uid)
         if record is None or record.is_deleted:
             raise MediaFileNotFoundError(uid)
-        if record.public_permission == "read":
-            return record
-        if can_read(record, actor_user_id):
+        if can_open_content(
+            record,
+            actor_user_id,
+            caller_workspace_ids=caller_workspace_ids,
+        ):
             return record
         raise MediaFileNotFoundError(uid)
 
@@ -443,6 +609,10 @@ class MediaFileService(MediaFileSearchMixin):
             raise MediaFileValidationError(
                 "include_deleted is only valid with scope 'owned'",
             )
+        if parent_id is not None:
+            parent = await self._files.get(parent_id)
+            if parent is not None and is_legacy_staging_folder(parent):
+                return Page.build([], total=0, limit=limit, offset=offset)
         page = await self._files.list_for_actor(
             actor_user_id=actor_user_id,
             parent_id=parent_id,
@@ -619,6 +789,63 @@ class MediaFileService(MediaFileSearchMixin):
         )
         return dataclasses.replace(record, starred=starred)
 
+    async def add_temporary_items(
+        self,
+        ids: list[str],
+        *,
+        actor_user_id: str,
+    ) -> int:
+        unique_ids = list(dict.fromkeys(ids))
+        for media_file_uid in unique_ids:
+            await self._get_visible(
+                media_file_uid,
+                actor_user_id=actor_user_id,
+            )
+
+        added = 0
+        for media_file_uid in unique_ids:
+            was_added = await self._files.add_temporary_item(
+                actor_user_id=actor_user_id,
+                media_file_uid=media_file_uid,
+            )
+            if was_added:
+                added += 1
+        return added
+
+    async def list_temporary_items(
+        self,
+        *,
+        actor_user_id: str,
+    ) -> list[MediaFileRecord]:
+        records = await self._files.list_temporary_items(
+            actor_user_id=actor_user_id,
+        )
+        visible = [
+            record
+            for record in records
+            if can_read(record, actor_user_id)
+        ]
+        return await self._with_starred(
+            visible,
+            actor_user_id=actor_user_id,
+        )
+
+    async def remove_temporary_item(
+        self,
+        media_file_id: str,
+        *,
+        actor_user_id: str,
+    ) -> None:
+        await self._files.remove_temporary_item(
+            actor_user_id=actor_user_id,
+            media_file_uid=media_file_id,
+        )
+
+    async def clear_temporary_items(self, *, actor_user_id: str) -> None:
+        await self._files.clear_temporary_items(
+            actor_user_id=actor_user_id,
+        )
+
     async def set_user_permission(
         self,
         uid: str,
@@ -682,16 +909,23 @@ class MediaFileService(MediaFileSearchMixin):
         name: str,
         parent_id: str | None,
         owner_id: str,
+        is_admin: bool = False,
     ) -> MediaFileRecord:
         """A library folder: MediaFile only -- no plugin call, no
         StorageObject (docs/11-dual-layer-library.md)."""
         if parent_id is not None:
             await self._writable_folder(parent_id, actor_user_id=owner_id)
+        connection_id = await self.resolve_placement(
+            parent_id=parent_id,
+            actor_user_id=owner_id,
+            is_admin=is_admin,
+        )
         return await self._files.create({
             "owner_id": owner_id,
             "type": "folder",
             "name": name,
             "parent_id": parent_id,
+            "provider_connection_id": connection_id,
             "metadata": {},
             "status": "completed",
             "error": None,
@@ -700,32 +934,119 @@ class MediaFileService(MediaFileSearchMixin):
             "workspace_id": None,
         })
 
+    async def copy_file(
+        self,
+        source: MediaFileRecord,
+        *,
+        dest_parent_id: str | None,
+        name: str,
+        actor_user_id: str,
+        byte_copy: bool,
+        is_admin: bool = False,
+    ) -> MediaFileRecord:
+        """Copy one file into `dest_parent_id`.
+
+        Same-storage (`byte_copy=False`): new MediaFile sharing the source
+        StorageObject. Cross-storage: stream bytes and upload onto the
+        destination connection.
+        """
+        # Re-load through ACL so callers cannot pass a foreign record.
+        source = await self.get(source.uid, actor_user_id=actor_user_id)
+        self._require(source, actor_user_id, PermissionEnum.READ, "copy")
+        if source.type != "file":
+            raise MediaFileValidationError(
+                f"File '{source.uid}' is not content-bearing",
+            )
+        if dest_parent_id is not None:
+            await self._writable_folder(
+                dest_parent_id, actor_user_id=actor_user_id,
+            )
+
+        if byte_copy:
+            if (
+                source.provider_connection_id is None
+                or source.content_reference is None
+            ):
+                raise MediaFileValidationError(
+                    f"File '{source.uid}' has no linked storage object",
+                )
+            chunks: list[bytes] = [chunk async for chunk in self._plugins.read_content(
+                source.provider_connection_id,
+                source.content_reference,
+                range_header=None,
+            ) if chunk]
+            dest_connection_id = None
+            if dest_parent_id is not None:
+                dest_connection_id = await self._bound_connection(dest_parent_id)
+            return await self.upload(
+                provider_connection_id=dest_connection_id,
+                parent_id=dest_parent_id,
+                name=name,
+                content=b"".join(chunks),
+                content_type=source.content_type,
+                owner_id=actor_user_id,
+                is_admin=is_admin,
+            )
+
+        if source.storage_object_uid is None:
+            raise MediaFileValidationError(
+                f"File '{source.uid}' has no linked storage object",
+            )
+        record = await self._files.create({
+            "owner_id": actor_user_id,
+            "type": "file",
+            "name": name,
+            "parent_id": dest_parent_id,
+            "provider_connection_id": source.provider_connection_id,
+            "metadata": {},
+            "status": "processing",
+            "error": None,
+            "public_permission": "none",
+            "permissions": [],
+            "workspace_id": None,
+        })
+        await self._files.link_object(
+            media_file_uid=record.uid,
+            storage_object_uid=source.storage_object_uid,
+        )
+        return await self._files.update(record.uid, {"status": "completed"})
+
     async def upload(
         self,
         *,
-        provider_connection_id: str,
+        provider_connection_id: str | None = None,
         parent_id: str | None,
         name: str,
         content: bytes,
         content_type: str | None = None,
         owner_id: str,
+        is_admin: bool = False,
     ) -> MediaFileRecord:
         """Upload: plugin write -> verify -> upsert StorageObject ->
         MediaFile + `primary` link.
 
         The provider write happens at the provider's root regardless of
-        the library `parent_id` -- library structure is UMedia's own; a
-        mirrored connection reflects later *moves*, not the initial
+        the library `parent_id`, except on `local`: that connection is
+        shared, so bytes go under
+        `.umedia/users/{owner_id}/{media_file_uid}/` (docs/12-file-storage.md).
+        A mirrored connection reflects later *moves*, not the initial
         placement (`update()` below).
         """
         if parent_id is not None:
             await self._writable_folder(parent_id, actor_user_id=owner_id)
+        provider_connection_id = await self.resolve_placement(
+            parent_id=parent_id,
+            preferred_connection_id=provider_connection_id,
+            actor_user_id=owner_id,
+            is_admin=is_admin,
+        )
 
         record = await self._files.create({
             "owner_id": owner_id,
             "type": "file",
             "name": name,
             "parent_id": parent_id,
+            "provider_connection_id": provider_connection_id,
             "metadata": {},
             "status": "processing",
             "error": None,
@@ -735,9 +1056,24 @@ class MediaFileService(MediaFileSearchMixin):
         })
 
         try:
+            plugin_parent = plugin_upload_parent(
+                provider_type=await self._provider_type(provider_connection_id),
+                owner_id=owner_id,
+                media_file_uid=record.uid,
+            )
+        except ValueError as error:
+            await self._files.update(
+                record.uid,
+                {"status": "failed", "error": str(error)},
+            )
+            raise MediaFileValidationError(str(error)) from error
+
+        try:
             plugin_resource = await self._plugins.create_resource(
                 provider_connection_id,
-                CreateResourceIn(name=name, type="file", parent_id=None),
+                CreateResourceIn(
+                    name=name, type="file", parent_id=plugin_parent,
+                ),
                 content,
             )
             await self._verify(provider_connection_id, plugin_resource)
@@ -755,9 +1091,11 @@ class MediaFileService(MediaFileSearchMixin):
             "type": plugin_resource.type or "file",
             "name": plugin_resource.name or name,
             "content_hash": await _hash(content),
-            "content_type": plugin_resource.content_type
-            or content_type
-            or DEFAULT_CONTENT_TYPE,
+            "content_type": index_content_type(
+                name,
+                plugin_resource.content_type,
+                content_type,
+            ),
             "size": plugin_resource.size
             if plugin_resource.size is not None
             else len(content),
@@ -768,8 +1106,8 @@ class MediaFileService(MediaFileSearchMixin):
         existing = await self._files.get_by_storage_object(obj.uid)
         if existing is not None and existing.uid != record.uid:
             # The provider reported the same physical object an earlier
-            # upload already linked (e.g. `local` overwriting the same
-            # path). One object, one link (v1): drop the placeholder row.
+            # upload already linked (same dump path, or an opaque id).
+            # One object, one link (v1): drop the placeholder row.
             await self._files.hard_delete(record.uid)
             if existing.owner_id == owner_id and not existing.is_deleted:
                 return existing
@@ -829,10 +1167,11 @@ class MediaFileService(MediaFileSearchMixin):
             {
                 "content_reference": plugin_resource.id,
                 "content_hash": await _hash(content),
-                "content_type": (
-                    plugin_resource.content_type
-                    or content_type
-                    or storage_object.content_type
+                "content_type": index_content_type(
+                    current.name,
+                    plugin_resource.content_type,
+                    content_type,
+                    storage_object.content_type,
                 ),
                 "size": (
                     plugin_resource.size
@@ -902,6 +1241,7 @@ class MediaFileService(MediaFileSearchMixin):
                 parent_id,
                 actor_user_id=actor_user_id,
             )
+            new_parent = await self._bind_move_to_storage(current, new_parent)
         if not renaming and not moving:
             return current
 
@@ -918,6 +1258,29 @@ class MediaFileService(MediaFileSearchMixin):
         if moving:
             changes["parent_id"] = parent_id
         return await self._files.update(uid, changes)
+
+    async def _bind_move_to_storage(
+        self,
+        current: MediaFileRecord,
+        new_parent: MediaFileRecord,
+    ) -> MediaFileRecord:
+        """Keep a folder (and its files) on one storage. Moving into a
+        folder of a different connection is a copy, not a nest.
+
+        """
+        dest_conn = await self._bound_connection(new_parent.uid)
+        item_conn = current.provider_connection_id
+        if not item_conn and current.type == "folder":
+            item_conn = await self._bound_connection(current.uid)
+        if dest_conn and item_conn and dest_conn != item_conn:
+            raise MediaFileValidationError(
+                "Cannot move items into a folder on a different storage",
+            )
+        if item_conn and not dest_conn:
+            return await self._files.update(
+                new_parent.uid, {"provider_connection_id": item_conn},
+            )
+        return new_parent
 
     async def _mirror_structure_change(
         self,
@@ -1042,13 +1405,24 @@ class MediaFileService(MediaFileSearchMixin):
             if not have_mtimes or remote_mtime == previous_mtime:
                 return previous.content_hash
 
-        return await _hash_stream(
-            self._plugins.read_content(
-                provider_connection_id,
+        try:
+            return await _hash_stream(
+                self._plugins.read_content(
+                    provider_connection_id,
+                    resource.id,
+                    range_header=None,
+                ),
+            )
+        except Exception:
+            # A hash read timeout/failure must not abort the whole sync
+            # walk — otherwise nested folders never get indexed after a
+            # large root file (seen with S3/rclone on multi‑MB objects).
+            logging.exception(
+                "Content hash failed for %s on connection %s; continuing sync",
                 resource.id,
-                range_header=None,
-            ),
-        )
+                provider_connection_id,
+            )
+            return previous.content_hash if previous is not None else None
 
     async def import_if_enabled(
         self,
@@ -1082,6 +1456,13 @@ class MediaFileService(MediaFileSearchMixin):
         - Ours newer (indexed mtime ahead of remote): push our content to
           the provider when `mirror_structure` is on, then refresh the index.
         - New remote object: import MediaFile under the connection root.
+        - Complete walk only: StorageObjects not observed this pass become
+          `status=missing` and their linked MediaFiles are soft-deleted.
+          A raised listing (or any walk error) skips that missing-mark so
+          a partial scan cannot look like mass deletion.
+        - Reappear of a previously-missing object restores the same
+          MediaFile uid; user trash while the object was still `active`
+          is left in trash.
         """
         connection = await self._connections.get(provider_connection_id)
         if connection is None:
@@ -1089,29 +1470,16 @@ class MediaFileService(MediaFileSearchMixin):
                 f"Provider connection '{provider_connection_id}' not found",
             )
         mirror = bool(getattr(connection, "mirror_structure", False))
-
-        root = await self._files.find_import_root(
-            provider_connection_id=provider_connection_id,
-            owner_id=actor_user_id,
+        root = await self._ensure_import_root(
+            connection, actor_user_id=actor_user_id,
         )
-        if root is None:
-            root = await self._files.create({
-                "owner_id": actor_user_id,
-                "type": "folder",
-                "name": connection.name,
-                "parent_id": None,
-                "metadata": {"import_root": provider_connection_id},
-                "status": "completed",
-                "error": None,
-                "public_permission": "none",
-                "permissions": [],
-                "workspace_id": None,
-            })
 
         imported = 0
         updated = 0
         pushed = 0
         seen = 0
+        restored = 0
+        observed: set[str] = set()
         visited: set[str | None] = set()
         stack: list[tuple[str | None, str]] = [(None, root.uid)]
         while stack:
@@ -1125,104 +1493,233 @@ class MediaFileService(MediaFileSearchMixin):
             )
             for resource in resources:
                 seen += 1
-                is_folder = resource.type == "folder"
-                remote_meta = dict(resource.metadata or {})
-                remote_mtime = remote_meta.get("mtime")
-                remote_size = resource.size or 0
-
-                previous = await self._objects.get_by_reference(
-                    provider_connection_id=provider_connection_id,
-                    content_reference=resource.id,
-                )
-                remote_newer = False
-                if previous is not None and not is_folder:
-                    prev_mtime = (previous.metadata or {}).get("mtime")
-                    have_mtimes = isinstance(remote_mtime, (int, float)) and isinstance(
-                        prev_mtime, (int, float)
-                    )
-                    ours_newer = False
-                    if have_mtimes:
-                        if remote_mtime > prev_mtime:
-                            remote_newer = True
-                        elif prev_mtime > remote_mtime:
-                            ours_newer = True
-                        elif remote_size != previous.size:
-                            # Same mtime, size drifted — trust the provider.
-                            remote_newer = True
-                    elif remote_size != previous.size:
-                        remote_newer = True
-
-                    linked = await self._files.get_by_storage_object(previous.uid)
-                    if remote_newer and linked is not None:
-                        # Snapshot prior indexed version as MediaFile history
-                        # (tmp) before adopting the remote metadata.
-                        history = [
-                            *linked.history,
-                            HistoryEntry(
-                                storage_object_uid=previous.uid,
-                                content_hash=previous.content_hash,
-                                content_type=previous.content_type,
-                                size=previous.size,
-                            ),
-                        ]
-                        await self._files.update(linked.uid, {"history": history})
-                        updated += 1
-                    elif ours_newer and mirror and linked is not None:
-                        await self._push_indexed_content(
-                            provider_connection_id,
-                            previous,
-                        )
-                        pushed += 1
-
-                content_hash = await self._resolve_content_hash(
+                observed.add(resource.id)
+                if is_umedia_managed_reference(resource.id):
+                    # Core-owned local dump (per-user upload paths). Keep
+                    # walking so descendants are observed, but never
+                    # import them as library files.
+                    if resource.type == "folder":
+                        stack.append((resource.id, library_parent_uid))
+                    continue
+                media_file, deltas = await self._sync_listed_resource(
                     provider_connection_id,
                     resource,
-                    previous,
-                    remote_newer=remote_newer,
+                    actor_user_id=actor_user_id,
+                    library_parent_uid=library_parent_uid,
+                    mirror=mirror,
                 )
-                obj = await self._objects.upsert({
-                    "provider_connection_id": provider_connection_id,
-                    "content_reference": resource.id,
-                    "provider_parent_ref": resource.parent_id,
-                    "type": resource.type,
-                    "name": resource.name,
-                    "content_hash": content_hash,
-                    "content_type": resource.content_type
-                    or (DIRECTORY_CONTENT_TYPE if is_folder else DEFAULT_CONTENT_TYPE),
-                    "size": remote_size,
-                    "metadata": remote_meta,
-                    "status": "active",
-                })
-                existing = await self._files.get_by_storage_object(obj.uid)
-                if existing is None:
-                    media_file = await self._files.create({
-                        "owner_id": actor_user_id,
-                        "type": resource.type,
-                        "name": resource.name,
-                        "parent_id": library_parent_uid,
-                        "metadata": {},
-                        "status": "completed",
-                        "error": None,
-                        "public_permission": "none",
-                        "permissions": [],
-                        "workspace_id": None,
-                    })
-                    await self._files.link_object(
-                        media_file_uid=media_file.uid,
-                        storage_object_uid=obj.uid,
-                    )
-                    imported += 1
-                else:
-                    media_file = existing
-                if is_folder:
+                imported += deltas["imported"]
+                updated += deltas["updated"]
+                pushed += deltas["pushed"]
+                restored += deltas["restored"]
+                if resource.type == "folder":
                     stack.append((resource.id, media_file.uid))
 
+        missing = await self._mark_unseen_missing(
+            provider_connection_id,
+            observed,
+        )
         return {
             "imported": imported,
             "updated": updated,
             "pushed": pushed,
             "seen": seen,
+            "missing": missing,
+            "restored": restored,
         }
+
+    async def _ensure_import_root(
+        self,
+        connection: Any,  # noqa: ANN401 -- protocol get() is untyped
+        *,
+        actor_user_id: str,
+    ) -> MediaFileRecord:
+        """Reuse the connection's library root regardless of which admin
+        is the actor, so polling cannot fork a second folder."""
+        root = await self._files.find_import_root(
+            provider_connection_id=connection.uid,
+            owner_id=actor_user_id,
+        )
+        if root is None:
+            root = await self._files.find_import_root(
+                provider_connection_id=connection.uid,
+            )
+        if root is None:
+            root = await self._files.create({
+                "owner_id": actor_user_id,
+                "type": "folder",
+                "name": connection.name,
+                "parent_id": None,
+                "provider_connection_id": connection.uid,
+                "metadata": {"import_root": connection.uid},
+                "status": "completed",
+                "error": None,
+                "public_permission": "none",
+                "permissions": [],
+                "workspace_id": None,
+            })
+        elif root.provider_connection_id is None:
+            root = await self._files.update(
+                root.uid,
+                {"provider_connection_id": connection.uid},
+            )
+        return root
+
+    async def _sync_listed_resource(
+        self,
+        provider_connection_id: str,
+        resource: PluginResource,
+        *,
+        actor_user_id: str,
+        library_parent_uid: str,
+        mirror: bool,
+    ) -> tuple[MediaFileRecord, dict[str, int]]:
+        """Upsert one listed object and create/restore its MediaFile.
+
+        Counter deltas are 0/1 for imported/updated/pushed/restored.
+        """
+        deltas = {"imported": 0, "updated": 0, "pushed": 0, "restored": 0}
+        is_folder = resource.type == "folder"
+        remote_meta = dict(resource.metadata or {})
+        remote_size = resource.size or 0
+
+        previous = await self._objects.get_by_reference(
+            provider_connection_id=provider_connection_id,
+            content_reference=resource.id,
+        )
+        was_missing = previous is not None and previous.status == "missing"
+        remote_newer = await self._apply_freshness_policy(
+            provider_connection_id,
+            resource,
+            previous,
+            mirror=mirror,
+            deltas=deltas,
+        )
+        content_hash = await self._resolve_content_hash(
+            provider_connection_id,
+            resource,
+            previous,
+            remote_newer=remote_newer,
+        )
+        obj = await self._objects.upsert({
+            "provider_connection_id": provider_connection_id,
+            "content_reference": resource.id,
+            "provider_parent_ref": resource.parent_id,
+            "type": resource.type,
+            "name": resource.name,
+            "content_hash": content_hash,
+            "content_type": (
+                DIRECTORY_CONTENT_TYPE
+                if is_folder
+                else index_content_type(resource.name, resource.content_type)
+            ),
+            "size": remote_size,
+            "metadata": remote_meta,
+            "status": "active",
+        })
+        existing = await self._files.get_by_storage_object(obj.uid)
+        if existing is None:
+            media_file = await self._files.create({
+                "owner_id": actor_user_id,
+                "type": resource.type,
+                "name": resource.name,
+                "parent_id": library_parent_uid,
+                "provider_connection_id": provider_connection_id,
+                "metadata": {},
+                "status": "completed",
+                "error": None,
+                "public_permission": "none",
+                "permissions": [],
+                "workspace_id": None,
+            })
+            await self._files.link_object(
+                media_file_uid=media_file.uid,
+                storage_object_uid=obj.uid,
+            )
+            deltas["imported"] = 1
+            return media_file, deltas
+        if existing.is_deleted and was_missing:
+            await self._restore_tree(existing)
+            deltas["restored"] = 1
+        return existing, deltas
+
+    async def _apply_freshness_policy(
+        self,
+        provider_connection_id: str,
+        resource: PluginResource,
+        previous: StorageObjectRecord | None,
+        *,
+        mirror: bool,
+        deltas: dict[str, int],
+    ) -> bool:
+        """Remote-newer snapshots history; ours-newer with mirror pushes.
+
+        Returns whether the remote side won this pass.
+        """
+        if previous is None or resource.type == "folder":
+            return False
+        remote_mtime = (resource.metadata or {}).get("mtime")
+        remote_size = resource.size or 0
+        prev_mtime = (previous.metadata or {}).get("mtime")
+        have_mtimes = isinstance(remote_mtime, (int, float)) and isinstance(
+            prev_mtime, (int, float)
+        )
+        remote_newer = False
+        ours_newer = False
+        if have_mtimes:
+            if remote_mtime > prev_mtime:
+                remote_newer = True
+            elif prev_mtime > remote_mtime:
+                ours_newer = True
+            elif remote_size != previous.size:
+                remote_newer = True
+        elif remote_size != previous.size:
+            remote_newer = True
+
+        linked = await self._files.get_by_storage_object(previous.uid)
+        if remote_newer and linked is not None:
+            history = [
+                *linked.history,
+                HistoryEntry(
+                    storage_object_uid=previous.uid,
+                    content_hash=previous.content_hash,
+                    content_type=previous.content_type,
+                    size=previous.size,
+                ),
+            ]
+            await self._files.update(linked.uid, {"history": history})
+            deltas["updated"] = 1
+        elif ours_newer and mirror and linked is not None:
+            await self._push_indexed_content(provider_connection_id, previous)
+            deltas["pushed"] = 1
+        return remote_newer
+
+    async def _mark_unseen_missing(
+        self,
+        provider_connection_id: str,
+        observed: set[str],
+    ) -> int:
+        """After a complete walk: index rows not seen this pass become
+        `missing` (still listed in Storage browse) and their linked
+        library files go to trash. Already-missing rows are left alone.
+        """
+        missing = 0
+        indexed = await self._objects.list(
+            provider_connection_id=provider_connection_id,
+        )
+        for obj in indexed:
+            if (
+                obj.content_reference in observed
+                or obj.status == "missing"
+                or is_umedia_managed_reference(obj.content_reference)
+            ):
+                continue
+            await self._objects.update(obj.uid, {"status": "missing"})
+            missing += 1
+            linked = await self._files.get_by_storage_object(obj.uid)
+            if linked is not None and not linked.is_deleted:
+                await self._soft_delete_tree(linked)
+        return missing
 
     async def _push_indexed_content(
         self,
@@ -1252,6 +1749,40 @@ class MediaFileService(MediaFileSearchMixin):
     # The ACL is checked once, at the root of the operation -- the
     # recursive `_*_tree` helpers act on every descendant regardless of
     # per-child grants, same rule the Resource layer had.
+
+    async def soft_delete_for_connection(
+        self,
+        provider_connection_id: str,
+    ) -> int:
+        """Trash every live MediaFile bound or synced to a connection
+        being removed. StorageObjects and remote bytes stay (doc 11).
+
+        No actor ACL -- this is a system cascade when the connection is
+        deleted, same stance as `_mark_unseen_missing`. Soft-deletes
+        forest roots only (parent not also a candidate) so `_soft_delete_tree`
+        covers each subtree once. Returns the number of roots trashed.
+        """
+        by_uid: dict[str, MediaFileRecord] = {}
+        for record in await self._files.list_for_connection(
+            provider_connection_id,
+        ):
+            by_uid[record.uid] = record
+        for obj in await self._objects.list(
+            provider_connection_id=provider_connection_id,
+        ):
+            linked = await self._files.get_by_storage_object(obj.uid)
+            if linked is not None and not linked.is_deleted:
+                by_uid[linked.uid] = linked
+
+        candidate_ids = set(by_uid)
+        roots = [
+            record
+            for record in by_uid.values()
+            if record.parent_id not in candidate_ids
+        ]
+        for root in roots:
+            await self._soft_delete_tree(root)
+        return len(roots)
 
     async def soft_delete(self, uid: str, *, actor_user_id: str) -> None:
         record = await self.get(uid, actor_user_id=actor_user_id)

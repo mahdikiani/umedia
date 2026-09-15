@@ -1,7 +1,7 @@
 """Async Alembic environment.
 
 Only tracks this app's own tables (`ProviderConnection`, `Resource`,
-`StorageObject`, `MediaFile`, `MediaFileObject`). usso.lite manages its
+`StorageObject`, `MediaFile`, `MediaFileObject`, `InstanceSettings`). usso.lite manages its
 own tables separately via `LiteDatabase.init_db()` (`create_all`, not
 migrations) -- see `apps/auth/services.py` -- so they are deliberately
 not part of this metadata.
@@ -15,13 +15,21 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from apps.media_files.models import MediaFile, MediaFileObject, MediaFileStar
+from apps.media_files.models import (
+    InstanceSettings,
+    LibraryTransfer,
+    MediaFile,
+    MediaFileObject,
+    MediaFileStar,
+)
 from apps.provider_connections.models import ProviderConnection
 from apps.resources.models import Resource
 from apps.storage_objects.models import StorageObject
 from server.config import Settings
 
 __all__ = [
+    "InstanceSettings",
+    "LibraryTransfer",
     "MediaFile",
     "MediaFileObject",
     "MediaFileStar",

@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,9 +55,28 @@ def _minimal_env(extra: dict[str, str] | None) -> dict[str, str]:
     `asyncio.create_subprocess_exec` means *inherit everything*, which
     would hand every plugin `DATABASE_URL` and `UMEDIA_MASTER_KEY` whether
     it needs them or not.
+
+    Manifest entrypoints invoke ``python -m ...``. Prefer the core process's
+    interpreter bin dir first so a polluted PATH (another venv ahead of this
+    one) cannot spawn a Python that lacks the app's dependencies -- that
+    failure mode otherwise burns the full healthy_timeout per plugin and
+    trips ASGI LifespanManager's 5s startup budget.
     """
+    # Do not Path.resolve(): uv venvs symlink `python` to the base interpreter,
+    # and that base bin has no site-packages.
+    interpreter_bin = str(Path(sys.executable).parent)
+    parent_path = os.environ.get("PATH", "")
+    path = (
+        parent_path
+        if parent_path.split(os.pathsep)[0:1] == [interpreter_bin]
+        else (
+            f"{interpreter_bin}{os.pathsep}{parent_path}"
+            if parent_path
+            else interpreter_bin
+        )
+    )
     env = {
-        "PATH": os.environ.get("PATH", ""),
+        "PATH": path,
         # Bare PATH and no LANG → Python uses the ascii codec for paths.
         # macOS screenshot names include U+202F; PutObject then 400s.
         "LANG": "C.UTF-8",

@@ -196,6 +196,22 @@ class StorageObjectOut(BaseModel):
         )
 
 
+class PlacementOut(BaseModel):
+    """`GET /settings/placement` -- where root uploads land."""
+
+    policy: Literal["default", "fill_order", "most_free"]
+    default_connection_id: str | None
+    fill_order: list[str]
+
+
+class PlacementIn(BaseModel):
+    """`PATCH /settings/placement` body -- omitted fields stay as-is."""
+
+    policy: Literal["default", "fill_order", "most_free"] | None = None
+    default_connection_id: str | None = None
+    fill_order: list[str] | None = None
+
+
 class VolumeStatsOut(BaseModel):
     """`GET /files/stats` -- owned library usage for the sidebar card."""
 
@@ -226,3 +242,57 @@ class SyncResultOut(BaseModel):
     updated: int = 0
     pushed: int = 0
     seen: int
+
+
+class TransferCreateIn(BaseModel):
+    """`POST /files/transfers` body."""
+
+    operation: Literal["move", "copy"]
+    source_ids: list[str] = Field(min_length=1)
+    dest_parent_id: str | None = None
+    conflict: Literal["rename", "skip"] = "rename"
+
+
+class TemporaryAddIn(BaseModel):
+    media_file_ids: list[str]
+
+
+class TransferOut(BaseModel):
+    """One library transfer job (always returned with 202 on create)."""
+
+    uid: str
+    operation: str
+    status: str
+    source_ids: list[str]
+    dest_parent_id: str | None
+    total_items: int
+    done_items: int
+    failed_items: int
+    progress_pct: int
+    current_name: str | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @classmethod
+    def from_record(cls, record: object) -> "TransferOut":
+        from .transfer_repository import TransferRecord
+
+        assert isinstance(record, TransferRecord)  # noqa: S101
+        return cls(
+            uid=record.uid,
+            operation=record.operation,
+            status=record.status,
+            source_ids=list(record.source_ids),
+            dest_parent_id=record.dest_parent_id,
+            total_items=record.total_items,
+            done_items=record.done_items,
+            failed_items=record.failed_items,
+            progress_pct=record.progress_pct,
+            current_name=record.current_name,
+            error=record.error,
+            created_at=record.created_at,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+        )

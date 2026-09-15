@@ -127,6 +127,24 @@ async def test_create_folder_then_nested_file(
 
 
 @pytest.mark.asyncio
+async def test_create_file_mkdirs_a_deep_user_dump_parent(
+    backend: LocalBackend, config: dict[str, str],
+) -> None:
+    created = await backend.create_resource(
+        config,
+        CreateResourceIn(
+            name="notes.txt",
+            parent_id=".umedia/users/user-1/file-aaa",
+        ),
+        content=_aiter([b"hi"]),
+    )
+
+    assert created.id == ".umedia/users/user-1/file-aaa/notes.txt"
+    path = Path(config["root_path"]) / ".umedia/users/user-1/file-aaa/notes.txt"
+    assert path.read_bytes() == b"hi"
+
+
+@pytest.mark.asyncio
 async def test_list_resources_detects_pdf_and_png_content_types(
     backend: LocalBackend, config: dict[str, str],
 ) -> None:

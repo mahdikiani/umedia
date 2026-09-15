@@ -1,27 +1,27 @@
 "use client";
 
 import {
+  Columns2,
   Database,
-  File as FileIcon,
-  FolderOpen,
   FolderPlus,
-  Link2,
-  MoreHorizontal,
+  LayoutGrid,
+  List,
   Pause,
-  Pencil,
   Play,
-  Share2,
-  Star,
-  Trash2,
   Upload,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Fragment, Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import * as tus from "tus-js-client";
 
+import { FileBrowserPane } from "@/components/file-browser-pane";
+import { TemporaryDock } from "@/components/temporary-dock";
+import { TransferDestinationDialog } from "@/components/transfer-destination-dialog";
+import { TransferProgressPanel } from "@/components/transfer-progress-panel";
+import { ShareDialog } from "@/components/share-dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,15 +32,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -49,13 +40,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -66,69 +50,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useTransferTracker } from "@/hooks/use-transfer-tracker";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ShareDialog } from "@/components/share-dialog";
-import {
+  addToTemporary as addTemporaryPointers,
   api,
   apiForm,
-  fileContentUrl,
   LIST_PAGE_SIZE,
   type MediaFileItem,
   type Page,
   type ProviderConnection,
+  type TransferJob,
 } from "@/lib/api";
-import { rememberRecent } from "@/lib/recents";
+import {
+  GROUP_OPTIONS,
+  parseFileSort,
+  parseFilesView,
+  parseGroupBy,
+  type FileSort,
+  type FilesView,
+  type GroupBy,
+  type SortOrder,
+} from "@/lib/files-view";
+import {
+  dataTransferHasFiles,
+  filesFromDataTransfer,
+  isEditableTarget,
+} from "@/lib/incoming-files";
+import { dataTransferHasLibraryIds } from "@/lib/umedia-dnd";
 
-type Crumb = { uid: string | null; name: string };
-
-type FileSort = "name" | "updated_at" | "type";
-type SortOrder = "asc" | "desc";
-type SortOption = {
-  value: string;
-  label: string;
-  sort: FileSort;
-  order: SortOrder;
-};
-
-const DEFAULT_SORT_OPTION: SortOption = {
-  value: "name-asc",
-  label: "Name (A→Z)",
-  sort: "name",
-  order: "asc",
-};
-
-const SORT_OPTIONS: readonly SortOption[] = [
-  DEFAULT_SORT_OPTION,
-  { value: "name-desc", label: "Name (Z→A)", sort: "name", order: "desc" },
-  {
-    value: "updated-desc",
-    label: "Last modified (newest)",
-    sort: "updated_at",
-    order: "desc",
-  },
-  {
-    value: "updated-asc",
-    label: "Last modified (oldest)",
-    sort: "updated_at",
-    order: "asc",
-  },
-  { value: "type-asc", label: "Type", sort: "type", order: "asc" },
-];
-
-type FilesListOptions = {
-  parentId: string | null;
-  query: string;
-  sort: FileSort;
-  order: SortOrder;
-  offset?: number;
-};
+const DUAL_PANE_KEY = "umedia.files.dualPane";
+const SECONDARY_FOLDER_KEY = "umedia.files.secondaryFolder";
 
 type UploadInFlight = {
   key: string;
@@ -141,30 +93,28 @@ function folderHref(
   uid: string | null,
   sort: FileSort,
   order: SortOrder,
+  groupBy: GroupBy = "none",
+  view: FilesView = "list",
 ): string {
   const params = new URLSearchParams();
   if (uid) params.set("folder", uid);
   params.set("sort", sort);
   params.set("order", order);
+  if (groupBy !== "none") params.set("group", groupBy);
+  if (view !== "list") params.set("view", view);
   return `/files?${params.toString()}`;
 }
 
-// How long the "waiting for it to finish processing" poll after a tus
-// upload reports 100% keeps trying before giving up -- tus completing
-// only means the bytes are fully staged; apps/media_files/uploads.py's
-// completion hook then finalizes the actual MediaFile (dedup, the plugin
-// write, verification) as a background task, so there's a real gap
-// between "upload done" and "resource exists" to bridge here.
 const FINALIZE_POLL_ATTEMPTS = 20;
 const FINALIZE_POLL_INTERVAL_MS = 1500;
 
-function filesListPath({
-  parentId,
-  query,
-  sort,
-  order,
+function filesListPath(
+  parentId: string | null,
+  query: string,
+  sort: FileSort,
+  order: SortOrder,
   offset = 0,
-}: FilesListOptions): string {
+): string {
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (parentId) params.set("parent_id", parentId);
@@ -173,17 +123,6 @@ function filesListPath({
   params.set("limit", String(LIST_PAGE_SIZE));
   params.set("offset", String(offset));
   return `/files?${params.toString()}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const exponent = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1,
-  );
-  const value = bytes / 1024 ** exponent;
-  return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
 }
 
 export default function FilesPage() {
@@ -203,23 +142,38 @@ export default function FilesPage() {
 function FilesBrowser() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const searchKey = searchParams.toString();
   const currentParentId = searchParams.get("folder");
   const query = (searchParams.get("q") ?? "").trim();
-  const sortParam = searchParams.get("sort");
-  const orderParam = searchParams.get("order");
-  const sortOption =
-    SORT_OPTIONS.find(
-      (option) => option.sort === sortParam && option.order === orderParam,
-    ) ?? DEFAULT_SORT_OPTION;
-  const { sort, order } = sortOption;
+  const urlSort = parseFileSort(
+    searchParams.get("sort"),
+    searchParams.get("order"),
+  );
+  const urlGroupBy = parseGroupBy(searchParams.get("group"));
+  const urlView = parseFilesView(searchParams.get("view"));
+  const urlTypeFilter = searchParams.get("type");
+  const [sort, setSort] = useState<FileSort>(urlSort.sort);
+  const [order, setOrder] = useState<SortOrder>(urlSort.order);
+  const [groupBy, setGroupBy] = useState<GroupBy>(urlGroupBy);
+  const [filesView, setFilesView] = useState<FilesView>(urlView);
+  const [typeFilter, setTypeFilter] = useState<string | null>(urlTypeFilter);
+
+  useEffect(() => {
+    setSort(urlSort.sort);
+    setOrder(urlSort.order);
+    setGroupBy(urlGroupBy);
+    setFilesView(urlView);
+    setTypeFilter(urlTypeFilter);
+  }, [
+    searchKey,
+    urlSort.order,
+    urlSort.sort,
+    urlGroupBy,
+    urlView,
+    urlTypeFilter,
+  ]);
 
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
-  const [connectionId, setConnectionId] = useState<string | null>(null);
-  const [crumbs, setCrumbs] = useState<Crumb[]>([{ uid: null, name: "Files" }]);
-  const [items, setItems] = useState<MediaFileItem[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -229,133 +183,149 @@ function FilesBrowser() {
   const [deleting, setDeleting] = useState<MediaFileItem | null>(null);
   const [busyUid, setBusyUid] = useState<string | null>(null);
   const [uploads, setUploads] = useState<UploadInFlight[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const [dualPane, setDualPane] = useState(false);
+  const [secondaryParentId, setSecondaryParentId] = useState<string | null>(
+    null,
+  );
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [destDialog, setDestDialog] = useState<{
+    operation: "move" | "copy";
+    sourceIds: string[];
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pendingSortClickRef = useRef<string | null>(null);
-  // Not React state on purpose: a `tus.Upload` instance and its promise
-  // `resolve` are imperative handles for pause/resume/cancel, not
-  // renderable data -- `uploads` (state, above) holds the display fields
-  // derived from these for the progress panel.
+  const dragDepth = useRef(0);
   const uploadControllers = useRef<
     Map<string, { upload: tus.Upload; resolve: () => void }>
   >(new Map());
 
+  const bumpRefresh = useCallback(() => {
+    setRefreshToken((value) => value + 1);
+  }, []);
+
+  const { jobs: transferJobs, track: trackTransfer, dismiss: dismissTransfer } =
+    useTransferTracker(bumpRefresh);
+
   useEffect(() => {
-    api<ProviderConnection[]>("/providers")
-      .then((list) => {
-        setConnections(list);
-        if (list.length > 0) {
-          setConnectionId(list[0].uid);
-        }
-      })
-      .finally(() => setConnectionsLoaded(true));
+    try {
+      setDualPane(localStorage.getItem(DUAL_PANE_KEY) === "1");
+      const saved = localStorage.getItem(SECONDARY_FOLDER_KEY);
+      setSecondaryParentId(saved && saved.length > 0 ? saved : null);
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
+    api<ProviderConnection[]>("/providers")
+      .then((list) => setConnections(list))
+      .finally(() => setConnectionsLoaded(true));
+  }, []);
+
+  // Secondary pane remembers a folder in localStorage. After a DB wipe (or
+  // delete) that uid is gone -- list_children returns an empty page with
+  // no error, so the right column looks blank while the left still has
+  // files. Validate and fall back to library root.
+  useEffect(() => {
+    if (!secondaryParentId) return;
     let cancelled = false;
-    // Flips the spinner on for this fetch (`currentParentId` changing is
-    // itself the "external" trigger -- a folder navigation --
-    // this effect is synchronizing to); the fetch's own `.then`/`.catch`
-    // below set the actual list state.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
-    api<Page<MediaFileItem>>(
-      filesListPath({ parentId: currentParentId, query, sort, order }),
-    )
-      .then((page) => {
+    void api<MediaFileItem>(`/files/${secondaryParentId}`)
+      .then((item) => {
         if (cancelled) return;
-        // Navigation replaces the list; "Load more" below appends.
-        setItems(page.items);
-        setHasMore(page.has_more);
+        if (item.type !== "folder") {
+          setSecondaryParentId(null);
+          try {
+            localStorage.removeItem(SECONDARY_FOLDER_KEY);
+          } catch {
+            // ignore
+          }
+        }
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (cancelled) return;
-        toast.error(error instanceof Error ? error.message : "Could not load files.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setSecondaryParentId(null);
+        try {
+          localStorage.removeItem(SECONDARY_FOLDER_KEY);
+        } catch {
+          // ignore
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [currentParentId, query, sort, order]);
+  }, [secondaryParentId]);
 
-  // Rebuild the trail from the URL folder so browser back/forward and
-  // deep links get the same crumbs as click-navigation.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadCrumbs() {
-      if (!currentParentId) {
-        if (!cancelled) setCrumbs([{ uid: null, name: "Files" }]);
-        return;
-      }
-      const chain: Crumb[] = [];
-      let cursor: string | null = currentParentId;
-      for (let depth = 0; cursor && depth < 64; depth += 1) {
-        try {
-          const item: MediaFileItem = await api(`/files/${cursor}`);
-          chain.unshift({ uid: item.uid, name: item.name });
-          if (item.uid === currentParentId) {
-            rememberRecent({ uid: item.uid, name: item.name, type: "folder" });
-          }
-          cursor = item.parent_id;
-        } catch {
-          break;
-        }
-      }
-      if (!cancelled) setCrumbs([{ uid: null, name: "Files" }, ...chain]);
-    }
-    void loadCrumbs();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentParentId]);
-
-  /** Re-fetch the first page and replace the list -- after a mutation
-   * the safest view is the fresh top of the listing, not a stale
-   * multi-page accumulation. */
-  async function refresh() {
-    const page = await api<Page<MediaFileItem>>(
-      filesListPath({ parentId: currentParentId, query, sort, order }),
-    );
-    setItems(page.items);
-    setHasMore(page.has_more);
-  }
-
-  async function loadMore() {
-    setLoadingMore(true);
+  function setDualPanePersisted(next: boolean) {
+    setDualPane(next);
     try {
-      const page = await api<Page<MediaFileItem>>(
-        filesListPath({
-          parentId: currentParentId,
-          query,
-          sort,
-          order,
-          offset: items.length,
-        }),
-      );
-      setItems((previous) => [...previous, ...page.items]);
-      setHasMore(page.has_more);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not load more files.",
-      );
-    } finally {
-      setLoadingMore(false);
+      localStorage.setItem(DUAL_PANE_KEY, next ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    // First open: mirror the left pane so both columns start with the
+    // same listing instead of an empty / stale right side.
+    if (next) {
+      setSecondaryParentId((current) => {
+        if (current !== null) return current;
+        const mirror = currentParentId;
+        try {
+          if (mirror) localStorage.setItem(SECONDARY_FOLDER_KEY, mirror);
+          else localStorage.removeItem(SECONDARY_FOLDER_KEY);
+        } catch {
+          // ignore
+        }
+        return mirror;
+      });
     }
   }
 
-  function switchConnection(uid: string) {
-    setConnectionId(uid);
+  function setSecondaryParentPersisted(uid: string | null) {
+    setSecondaryParentId(uid);
+    try {
+      if (uid) localStorage.setItem(SECONDARY_FOLDER_KEY, uid);
+      else localStorage.removeItem(SECONDARY_FOLDER_KEY);
+    } catch {
+      // ignore
+    }
   }
 
-  function replaceSort(value: string | null) {
-    const next =
-      SORT_OPTIONS.find((option) => option.value === value) ??
-      DEFAULT_SORT_OPTION;
+  async function refreshPrimaryListing() {
+    await api<Page<MediaFileItem>>(
+      filesListPath(currentParentId, query, sort, order),
+    );
+    bumpRefresh();
+  }
+
+  function replaceQuery(updates: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString());
-    params.set("sort", next.sort);
-    params.set("order", next.order);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+    }
     router.replace(`/files?${params.toString()}`);
+  }
+
+  function replaceGroup(value: string | null) {
+    const next = parseGroupBy(value);
+    setGroupBy(next);
+    replaceQuery({ group: next === "none" ? null : next });
+  }
+
+  function replaceView(next: FilesView) {
+    setFilesView(next);
+    replaceQuery({ view: next === "list" ? null : next });
+  }
+
+  function toggleTypeFilter(key: string) {
+    const next = typeFilter === key ? null : key;
+    setTypeFilter(next);
+    replaceQuery({ type: next });
+  }
+
+  function onSortChange(nextSort: FileSort, nextOrder: SortOrder) {
+    setSort(nextSort);
+    setOrder(nextOrder);
+    replaceQuery({ sort: nextSort, order: nextOrder });
   }
 
   async function createFolder() {
@@ -368,40 +338,28 @@ function FilesBrowser() {
       await apiForm("/files", "POST", form);
       setNewFolderOpen(false);
       setNewFolderName("");
-      await refresh();
+      bumpRefresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create folder.");
+      toast.error(
+        error instanceof Error ? error.message : "Could not create folder.",
+      );
     }
   }
 
-  /** Waits for whatever just landed in `apps.media_files.uploads`'s
-   * background finalize task to actually show up as a non-`processing`
-   * `MediaFile` -- a tus upload reporting "success" only means its bytes
-   * are fully staged, not that the file exists yet. Bounded: if it's
-   * still `processing` after `FINALIZE_POLL_ATTEMPTS`, the badge already
-   * rendered for that row says so; this just stops actively polling. */
   async function pollUntilSettled() {
     for (let attempt = 0; attempt < FINALIZE_POLL_ATTEMPTS; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, FINALIZE_POLL_INTERVAL_MS));
-      await refresh();
-      const stillProcessing = await api<Page<MediaFileItem>>(
-        filesListPath({ parentId: currentParentId, query, sort, order }),
-      ).then((page) =>
-        page.items.some(
-          (item) =>
-            item.provider_connection_id === connectionId
-            && item.status === "processing",
-        ),
+      await new Promise((resolve) =>
+        setTimeout(resolve, FINALIZE_POLL_INTERVAL_MS),
       );
+      bumpRefresh();
+      const stillProcessing = await api<Page<MediaFileItem>>(
+        filesListPath(currentParentId, query, sort, order),
+      ).then((page) => page.items.some((item) => item.status === "processing"));
       if (!stillProcessing) return;
     }
   }
 
   function startSingleUpload(file: File): Promise<void> {
-    // Only ever called from `uploadFiles`, itself only called from the
-    // file input's `onChange` -- a real event handler, never render --
-    // so `Date.now()` here can't produce the render-instability the rule
-    // is guarding against.
     // eslint-disable-next-line react-hooks/purity
     const key = `${file.name}-${file.size}-${Date.now()}`;
     return new Promise<void>((resolve) => {
@@ -410,11 +368,7 @@ function FilesBrowser() {
         chunkSize: 8 * 1024 * 1024,
         retryDelays: [0, 1000, 3000, 5000],
         metadata: {
-          provider_connection_id: connectionId ?? "",
           name: file.name,
-          // Required by tuspyserver's own HEAD route (used to resume
-          // after a dropped connection), not just our own metadata --
-          // see apps/media_files/uploads.py's `_validate_metadata`.
           filetype: file.type || "application/octet-stream",
           type: "file",
           ...(currentParentId ? { parent_id: currentParentId } : {}),
@@ -432,11 +386,6 @@ function FilesBrowser() {
           );
         },
         onSuccess: () => {
-          // tus reporting success only means the bytes are fully staged
-          // -- apps/media_files/uploads.py's background finalize task does
-          // the real work next, so this row stays visible (as
-          // "finalizing") until `pollUntilSettled` below confirms it's
-          // actually done, not just removed the instant the transfer ends.
           uploadControllers.current.delete(key);
           setUploads((previous) =>
             previous.map((u) =>
@@ -455,23 +404,77 @@ function FilesBrowser() {
     });
   }
 
-  function uploadFiles(fileList: FileList) {
-    if (!connectionId) return;
+  function uploadFiles(fileList: FileList | File[]) {
     const files = Array.from(fileList);
+    if (files.length === 0) return;
 
-    // Deliberately not awaited by the caller (the file-input's onChange):
-    // the whole point is that kicking off an upload doesn't block the UI
-    // -- progress renders from `uploads` state while this keeps running.
     void Promise.all(files.map((file) => startSingleUpload(file)))
-      .then(() => refresh())
+      .then(() => refreshPrimaryListing())
       .then(() => pollUntilSettled())
       .then(() => {
-        // Sweep out any rows still marked "finalizing" once the batch has
-        // settled -- see `startSingleUpload`'s onSuccess for why they
-        // weren't removed the moment the transfer itself finished.
-        setUploads((previous) => previous.filter((u) => u.stage !== "finalizing"));
+        setUploads((previous) =>
+          previous.filter((u) => u.stage !== "finalizing"),
+        );
       });
   }
+
+  const uploadFilesRef = useRef(uploadFiles);
+  uploadFilesRef.current = uploadFiles;
+
+  useEffect(() => {
+    function onDragEnter(event: DragEvent) {
+      if (dataTransferHasLibraryIds(event.dataTransfer)) return;
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDropActive(true);
+    }
+    function onDragOver(event: DragEvent) {
+      if (dataTransferHasLibraryIds(event.dataTransfer)) return;
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    }
+    function onDragLeave(event: DragEvent) {
+      if (dataTransferHasLibraryIds(event.dataTransfer)) return;
+      if (!dataTransferHasFiles(event.dataTransfer)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDropActive(false);
+    }
+    function onDrop(event: DragEvent) {
+      if (dataTransferHasLibraryIds(event.dataTransfer)) {
+        dragDepth.current = 0;
+        setDropActive(false);
+        return;
+      }
+      const files = filesFromDataTransfer(event.dataTransfer);
+      dragDepth.current = 0;
+      setDropActive(false);
+      if (files.length === 0) return;
+      event.preventDefault();
+      uploadFilesRef.current(files);
+    }
+    function onPaste(event: ClipboardEvent) {
+      if (isEditableTarget(event.target)) return;
+      const files = filesFromDataTransfer(event.clipboardData);
+      if (files.length === 0) return;
+      event.preventDefault();
+      uploadFilesRef.current(files);
+    }
+
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, []);
 
   function pauseUpload(key: string) {
     const controller = uploadControllers.current.get(key);
@@ -497,14 +500,9 @@ function FilesBrowser() {
     uploadControllers.current.delete(key);
     setUploads((previous) => previous.filter((u) => u.key !== key));
     try {
-      // `abort(true)` also tells the server to delete the staged bytes
-      // (tus's Termination extension) -- a plain `abort()` (pause) would
-      // leave them for the retention-window cleanup instead.
       await controller.upload.abort(true);
     } catch {
-      // Best-effort server-side cleanup; local UI state is already
-      // cleared, and the retention-window sweep (apps/media_files/uploads.py)
-      // catches anything left behind regardless.
+      // Best-effort
     }
     controller.resolve();
   }
@@ -518,7 +516,7 @@ function FilesBrowser() {
         body: JSON.stringify({ name: renameValue.trim() }),
       });
       setRenaming(null);
-      await refresh();
+      bumpRefresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not rename.");
     } finally {
@@ -533,9 +531,11 @@ function FilesBrowser() {
         method: "PATCH",
         body: JSON.stringify({ starred: !item.starred }),
       });
-      await refresh();
+      bumpRefresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update star.");
+      toast.error(
+        error instanceof Error ? error.message : "Could not update star.",
+      );
     } finally {
       setBusyUid(null);
     }
@@ -547,7 +547,7 @@ function FilesBrowser() {
     try {
       await api(`/files/${deleting.uid}`, { method: "DELETE" });
       setDeleting(null);
-      await refresh();
+      bumpRefresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete.");
     } finally {
@@ -555,10 +555,63 @@ function FilesBrowser() {
     }
   }
 
-  // Normally unreachable -- `(dashboard)/layout.tsx` redirects to
-  // `/onboarding` before this page ever mounts when there are zero
-  // connections. Kept as a defensive fallback (e.g. the last connection
-  // gets deleted while this page happens to already be mounted).
+  function openRename(item: MediaFileItem) {
+    setRenaming(item);
+    setRenameValue(item.name);
+  }
+
+  function onTransferCreated(job: TransferJob) {
+    trackTransfer(job);
+  }
+
+  const addToTemporary = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+      try {
+        await addTemporaryPointers(ids);
+        toast.success("Added to Temporary");
+        bumpRefresh();
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not add to Temporary.",
+        );
+      }
+    },
+    [bumpRefresh],
+  );
+
+  function primaryHref(uid: string | null) {
+    return folderHref(uid, sort, order, groupBy, filesView);
+  }
+
+  const paneShared = {
+    sort,
+    order,
+    groupBy,
+    filesView,
+    typeFilter,
+    onSortChange,
+    onTypeFilterToggle: toggleTypeFilter,
+    connections,
+    busyUid,
+    onRename: openRename,
+    onMove: (item: MediaFileItem) =>
+      setDestDialog({ operation: "move", sourceIds: [item.uid] }),
+    onCopy: (item: MediaFileItem) =>
+      setDestDialog({ operation: "copy", sourceIds: [item.uid] }),
+    onAddToTemporary: (item: MediaFileItem) => {
+      void addToTemporary([item.uid]);
+    },
+    onShare: setSharing,
+    onDelete: setDeleting,
+    onToggleStar: toggleStar,
+    onTransferCreated,
+    onTemporaryPointersChanged: bumpRefresh,
+    refreshToken,
+  };
+
   if (connectionsLoaded && connections.length === 0) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 rounded-xl border border-dashed p-16 text-center">
@@ -568,107 +621,104 @@ function FilesBrowser() {
         <div>
           <h2 className="font-semibold">No storage connected yet</h2>
           <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-            Connect local storage, S3, Telegram, or another provider to start building
-            your universal library.
+            Connect local storage, S3, Telegram, or another provider to start
+            building your universal library.
           </p>
         </div>
-        <Button render={<Link href="/settings" />}>Add storage</Button>
+        <Button render={<Link href="/settings/storage" />}>Add storage</Button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          {connections.length > 1 && connectionId && (
-            <Select onValueChange={(value) => switchConnection(value as string)} value={connectionId}>
-              <SelectTrigger className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {connections.map((connection) => (
-                  <SelectItem key={connection.uid} value={connection.uid}>
-                    {connection.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          <Breadcrumb>
-            <BreadcrumbList>
-              {crumbs.map((crumb, index) => (
-                <Fragment key={crumb.uid ?? "root"}>
-                  {index > 0 && <BreadcrumbSeparator />}
-                  <BreadcrumbItem>
-                    {index === crumbs.length - 1 ? (
-                      <BreadcrumbPage>{crumb.name}</BreadcrumbPage>
-                    ) : (
-                      <BreadcrumbLink
-                        render={
-                          <Link href={folderHref(crumb.uid, sort, order)} />
-                        }
-                      >
-                        {crumb.name}
-                      </BreadcrumbLink>
-                    )}
-                  </BreadcrumbItem>
-                </Fragment>
-              ))}
-            </BreadcrumbList>
-          </Breadcrumb>
+    <div className="relative flex flex-col gap-4 pb-24">
+      {dropActive ? (
+        <div
+          aria-live="polite"
+          className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-background/80"
+        >
+          <p className="rounded-xl border border-dashed bg-card px-6 py-4 text-sm font-medium">
+            Drop files to upload
+          </p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <input
-            hidden
-            multiple
-            onChange={(event) => {
-              if (event.target.files?.length) void uploadFiles(event.target.files);
-              event.target.value = "";
-            }}
-            ref={fileInputRef}
-            type="file"
-          />
-          <Button
-            onClick={() => fileInputRef.current?.click()}
-            size="sm"
-            variant="outline"
-          >
-            <Upload size={14} /> Upload
-          </Button>
-          <Button onClick={() => setNewFolderOpen(true)} size="sm" variant="outline">
-            <FolderPlus size={14} /> New folder
-          </Button>
-          <Select
-            items={SORT_OPTIONS}
-            value={sortOption.value}
-            onValueChange={(value) => {
-              if (pendingSortClickRef.current === value) {
-                pendingSortClickRef.current = null;
-                return;
-              }
-              replaceSort(value);
-            }}
-          >
-            <SelectTrigger className="w-52" aria-label="Sort files">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((option) => (
-                <SelectItem
-                  key={option.value}
-                  onClick={() => {
-                    pendingSortClickRef.current = option.value;
-                    replaceSort(option.value);
-                  }}
-                  value={option.value}
-                >
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <input
+          hidden
+          multiple
+          onChange={(event) => {
+            if (event.target.files?.length) void uploadFiles(event.target.files);
+            event.target.value = "";
+          }}
+          ref={fileInputRef}
+          type="file"
+        />
+        <Button
+          onClick={() => fileInputRef.current?.click()}
+          size="sm"
+          variant="outline"
+        >
+          <Upload data-icon="inline-start" />
+          Upload
+        </Button>
+        <Button
+          onClick={() => setNewFolderOpen(true)}
+          size="sm"
+          variant="outline"
+        >
+          <FolderPlus data-icon="inline-start" />
+          New folder
+        </Button>
+        <Button
+          aria-pressed={dualPane}
+          onClick={() => setDualPanePersisted(!dualPane)}
+          size="sm"
+          title="Show two folders side by side for drag-and-drop"
+          variant={dualPane ? "default" : "outline"}
+        >
+          <Columns2 data-icon="inline-start" />
+          Two columns
+        </Button>
+        <Select
+          items={[...GROUP_OPTIONS]}
+          value={groupBy}
+          onValueChange={(value) => replaceGroup(value)}
+        >
+          <SelectTrigger aria-label="Group files" className="w-44" size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {GROUP_OPTIONS.map((option) => (
+              <SelectItem
+                key={option.value}
+                label={option.label}
+                onClick={() => replaceGroup(option.value)}
+                value={option.value}
+              >
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <ToggleGroup
+          onValueChange={(value) => {
+            const next = value[0];
+            if (next === "list" || next === "cards") replaceView(next);
+          }}
+          size="sm"
+          spacing={0}
+          value={[filesView]}
+          variant="outline"
+        >
+          <ToggleGroupItem aria-label="List view" value="list">
+            <List data-icon="inline-start" />
+            List
+          </ToggleGroupItem>
+          <ToggleGroupItem aria-label="Card view" value="cards">
+            <LayoutGrid data-icon="inline-start" />
+            Cards
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       {uploads.length > 0 && (
@@ -717,167 +767,63 @@ function FilesBrowser() {
                   )}
                 </div>
               </div>
-              <Progress value={upload.stage === "finalizing" ? null : upload.percent} />
+              <Progress
+                value={upload.stage === "finalizing" ? null : upload.percent}
+              />
             </div>
           ))}
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead className="w-48">Type</TableHead>
-              <TableHead className="w-28">Size</TableHead>
-              <TableHead className="w-32">Modified</TableHead>
-              <TableHead className="w-10" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {items.length === 0 && !loading && (
-              <TableRow>
-                <TableCell
-                  className="py-10 text-center text-sm text-muted-foreground"
-                  colSpan={5}
-                >
-                  {query ? "No matching files." : "This folder is empty."}
-                </TableCell>
-              </TableRow>
-            )}
-            {items.map((item) => (
-              <TableRow key={item.uid}>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    {item.type === "folder" ? (
-                      <Link
-                        className="flex items-center gap-2 font-medium hover:underline"
-                        href={folderHref(item.uid, sort, order)}
-                        onClick={() =>
-                          rememberRecent({
-                            uid: item.uid,
-                            name: item.name,
-                            type: "folder",
-                          })
-                        }
-                      >
-                        <FolderOpen className="text-muted-foreground" size={16} />
-                        {item.name}
-                      </Link>
-                    ) : (
-                      <a
-                        className="flex items-center gap-2 font-medium hover:underline"
-                        href={fileContentUrl(item.uid, item.name)}
-                        onClick={() =>
-                          rememberRecent({
-                            uid: item.uid,
-                            name: item.name,
-                            type: "file",
-                          })
-                        }
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        <FileIcon className="text-muted-foreground" size={16} />
-                        {item.name}
-                      </a>
-                    )}
-                    <Button
-                      aria-label={item.starred ? "Remove star" : "Add star"}
-                      aria-pressed={item.starred}
-                      className={
-                        item.starred
-                          ? "text-foreground"
-                          : "text-muted-foreground/50 hover:text-muted-foreground"
-                      }
-                      disabled={busyUid === item.uid}
-                      onClick={() => void toggleStar(item)}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <Star
-                        className={item.starred ? "fill-foreground" : undefined}
-                        size={14}
-                      />
-                    </Button>
-                    {item.status !== "completed" && (
-                      <Badge variant={item.status === "failed" ? "destructive" : "secondary"}>
-                        {item.status}
-                      </Badge>
-                    )}
-                    {item.public_permission === "read" && (
-                      <Badge variant="outline">
-                        <Link2 size={11} /> Public
-                      </Badge>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary">
-                    {item.type === "folder"
-                      ? "Folder"
-                      : item.content_type || "application/octet-stream"}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {item.type === "folder" ? "—" : formatBytes(item.size)}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {new Date(item.updated_at).toLocaleDateString()}
-                </TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={
-                        <Button
-                          aria-label={`Actions for ${item.name}`}
-                          size="icon-sm"
-                          variant="ghost"
-                        />
-                      }
-                    >
-                      <MoreHorizontal size={15} />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() => {
-                          setRenaming(item);
-                          setRenameValue(item.name);
-                        }}
-                      >
-                        <Pencil size={14} /> Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setSharing(item)}>
-                        <Share2 size={14} /> Share…
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive"
-                        onClick={() => setDeleting(item)}
-                      >
-                        <Trash2 size={14} /> Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      <TransferProgressPanel
+        jobs={transferJobs}
+        onDismiss={dismissTransfer}
+      />
+
+      <div
+        className={
+          dualPane ? "grid gap-4 lg:grid-cols-2" : "flex flex-col gap-4"
+        }
+      >
+        <FileBrowserPane
+          {...paneShared}
+          folderHref={primaryHref}
+          linkNavigation
+          onNavigate={(uid) => router.push(primaryHref(uid))}
+          paneId="primary"
+          parentId={currentParentId}
+          query={query}
+          showBreadcrumb
+        />
+        {dualPane ? (
+          <FileBrowserPane
+            {...paneShared}
+            linkNavigation={false}
+            onNavigate={setSecondaryParentPersisted}
+            paneId="secondary"
+            parentId={secondaryParentId}
+            query=""
+            showBreadcrumb
+          />
+        ) : null}
       </div>
 
-      {hasMore && (
-        <div className="flex justify-center">
-          <Button
-            disabled={loadingMore}
-            onClick={() => void loadMore()}
-            size="sm"
-            variant="outline"
-          >
-            {loadingMore ? "Loading…" : "Load more"}
-          </Button>
-        </div>
-      )}
+      <TemporaryDock
+        addToTemporary={addToTemporary}
+        currentParentId={currentParentId}
+        onTransferCreated={onTransferCreated}
+        refreshToken={refreshToken}
+      />
+
+      <TransferDestinationDialog
+        onCreated={onTransferCreated}
+        onOpenChange={(open) => {
+          if (!open) setDestDialog(null);
+        }}
+        open={destDialog !== null}
+        operation={destDialog?.operation ?? "move"}
+        sourceIds={destDialog?.sourceIds ?? []}
+      />
 
       <Dialog onOpenChange={setNewFolderOpen} open={newFolderOpen}>
         <DialogContent>
@@ -923,7 +869,10 @@ function FilesBrowser() {
             <Button onClick={() => setRenaming(null)} variant="outline">
               Cancel
             </Button>
-            <Button disabled={busyUid === renaming?.uid} onClick={() => void submitRename()}>
+            <Button
+              disabled={busyUid === renaming?.uid}
+              onClick={() => void submitRename()}
+            >
               Save
             </Button>
           </DialogFooter>
@@ -933,10 +882,8 @@ function FilesBrowser() {
       <ShareDialog
         item={sharing}
         onItemUpdated={(updated) => {
-          // Keep the open dialog's own view fresh, then re-sync the list
-          // row (badge/permissions) behind it.
           setSharing(updated);
-          void refresh();
+          bumpRefresh();
         }}
         onOpenChange={(open) => {
           if (!open) setSharing(null);

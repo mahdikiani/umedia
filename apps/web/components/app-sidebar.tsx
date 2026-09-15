@@ -4,7 +4,7 @@ import {
   ChevronDown,
   File as FileIcon,
   FolderOpen,
-  HardDrive,
+  Database,
   Home,
   LogOut,
   Settings,
@@ -16,6 +16,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { useLocale } from "@/components/locale-provider";
+import { StorageProviderIcon } from "@/components/storage-provider-icon";
 import {
   Card,
   CardContent,
@@ -144,7 +145,7 @@ export function AppSidebar() {
                   onClick={() => setStoragesOpen((open) => !open)}
                   tooltip={text.navStorage}
                 >
-                  <HardDrive />
+                  <Database />
                   <span>{text.navStorage}</span>
                   <ChevronDown
                     className={cn(
@@ -163,6 +164,10 @@ export function AppSidebar() {
                             <Link href={storageProviderHref(connection.uid)} />
                           }
                         >
+                          <StorageProviderIcon
+                            providerType={connection.provider_type}
+                            size="sm"
+                          />
                           <span>{connection.name}</span>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>
@@ -202,7 +207,7 @@ export function AppSidebar() {
         </SidebarGroup>
         {stats && (
           <Card
-            className="mx-2 mt-3 bg-sidebar ring-sidebar-border group-data-[collapsible=icon]:hidden"
+            className="mx-2 mt-3 group-data-[collapsible=icon]:hidden"
             size="sm"
           >
             <CardHeader>
@@ -223,7 +228,20 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
-              isActive={pathname.startsWith("/settings")}
+              isActive={pathname.startsWith("/settings/storage")}
+              render={<Link href="/settings/storage" />}
+              tooltip={text.navStorageSettings}
+            >
+              <Database />
+              <span>{text.navStorageSettings}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={
+                pathname.startsWith("/settings") &&
+                !pathname.startsWith("/settings/storage")
+              }
               render={<Link href="/settings" />}
               tooltip={text.navSettings}
             >

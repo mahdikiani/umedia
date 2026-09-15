@@ -41,6 +41,33 @@ class AuthStateResponse(BaseModel):
     configured: bool
     authenticated: bool
     user: AuthStateUser | None = None
+    #: Configured usso.lite OIDC identity providers (e.g. ``["google"]``).
+    #: Empty when Google client credentials are not set. Distinct from
+    #: Drive storage OAuth under ``/providers/oauth/*``.
+    oidc_providers: list[str] = Field(default_factory=list)
+
+
+class OidcStartRequest(BaseModel):
+    """Begin an OIDC identity paste/localhost-redirect login."""
+
+    provider: str = Field(default="google", min_length=1, max_length=64)
+
+
+class OidcStartResponse(BaseModel):
+    """Authorize URL and CSRF state for the OIDC paste flow."""
+
+    provider: str
+    authorization_url: str
+    state: str
+    redirect_uri: str
+
+
+class OidcCompleteRequest(BaseModel):
+    """Complete OIDC identity login with a pasted callback URL/code."""
+
+    provider: str = Field(default="google", min_length=1, max_length=64)
+    callback: str = Field(min_length=1, max_length=8192)
+    state: str | None = Field(default=None, max_length=512)
 
 
 class SessionResponse(AuthStateResponse):
@@ -49,6 +76,26 @@ class SessionResponse(AuthStateResponse):
     access_token: str
     token_type: str = "bearer"  # noqa: S105
     expires_in: int
+
+
+class RefreshRequest(BaseModel):
+    """Optional body token for `POST /auth/refresh` (API clients)."""
+
+    refresh_token: str | None = None
+
+
+class RefreshResponse(AuthStateResponse):
+    """Token rotation result.
+
+    Browser cookie-mode (GET, or POST without a body token) omits
+    `access_token` the way production usso does. API clients that POST
+    `{refresh_token}` get the new access token in JSON.
+    """
+
+    status: Literal["refreshed"] = "refreshed"
+    access_token: str | None = None
+    token_type: str | None = None
+    expires_in: int | None = None
 
 
 class CurrentSessionResponse(BaseModel):

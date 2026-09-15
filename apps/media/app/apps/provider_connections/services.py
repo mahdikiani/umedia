@@ -12,8 +12,25 @@ from plugins.process_manager import PluginProcessManager
 
 class RepositoryProtocol(Protocol):
     async def create(self, data: dict) -> object: ...
-    async def get(self, uid: str) -> object | None: ...
-    async def update(self, uid: str, changes: dict) -> object | None: ...
+    async def get(
+        self, uid: str, *, owner_id: str | None = None,
+    ) -> object | None: ...
+    async def update(
+        self, uid: str, changes: dict, *, owner_id: str | None = None,
+    ) -> object | None: ...
+    async def delete(
+        self, uid: str, *, owner_id: str | None = None,
+    ) -> bool: ...
+
+
+class LibrarySoftDeleteProtocol(Protocol):
+    async def soft_delete_for_connection(
+        self, provider_connection_id: str,
+    ) -> int: ...
+
+
+class PlacementClearProtocol(Protocol):
+    async def clear_connection_references(self, connection_id: str) -> None: ...
 
 
 class CipherProtocol(Protocol):
@@ -29,6 +46,8 @@ Connector = Callable[[PluginManifest, dict[str, Any]], Awaitable[None]]
 #: Capability required to turn on `mirror_structure` (same gate the
 #: MediaFile mirror path uses — flat providers like Telegram omit it).
 MIRROR_CAPABILITY = "move"
+
+LOCAL_PROVIDER_TYPE = "local"
 
 
 class ProviderValidationError(BaseHTTPException):
@@ -55,6 +74,18 @@ class ProviderConnectionError(BaseHTTPException):
         )
 
 
+class LocalProviderAdminRequired(BaseHTTPException):
+    """Local filesystem storage is restricted to administrators."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=403,
+            error_code="local_admin_required",
+            detail="Local storage is restricted to administrators",
+            message="Local storage is restricted to administrators",
+        )
+
+
 def build_plugin_connector(process_manager: PluginProcessManager) -> Connector:
     """The default `Connector`: calls the manifest's plugin process's
     real `POST /connect` over its Unix socket (docs/03-provider-system.md).
@@ -75,6 +106,26 @@ def build_plugin_connector(process_manager: PluginProcessManager) -> Connector:
         await client.connect(plugin_config)
 
     return connect
+
+
+def connection_usable_by(
+    connection: object,
+    *,
+    actor_user_id: str,
+    is_admin: bool,
+) -> bool:
+    """Whether `actor` may use this connection for placement / file ops.
+
+    `owner_id is None` is treated as unrestricted (test fakes); production
+    rows always have an owner after migration 0010.
+    """
+    owner_id = getattr(connection, "owner_id", None)
+    if owner_id is not None and owner_id != actor_user_id:
+        return False
+    provider_type = getattr(connection, "provider_type", None)
+    if provider_type == LOCAL_PROVIDER_TYPE and not is_admin:
+        return False
+    return True
 
 
 class ProviderConnectionService:
@@ -110,9 +161,13 @@ class ProviderConnectionService:
         provider_type: str,
         name: str,
         config: dict,
+        owner_id: str,
+        is_admin: bool = False,
         import_existing: bool = False,
         mirror_structure: bool = False,
     ) -> object:
+        if provider_type == LOCAL_PROVIDER_TYPE and not is_admin:
+            raise LocalProviderAdminRequired()
         manifest = self._registry.get(provider_type)
         if manifest is None:
             raise ProviderValidationError("Unknown provider type")
@@ -137,6 +192,7 @@ class ProviderConnectionService:
             raise ProviderConnectionError(str(error)) from error
         return await self._repository.create(
             {
+                "owner_id": owner_id,
                 "provider_type": provider_type,
                 "name": name.strip(),
                 "encrypted_config": self._cipher.encrypt_json(normalized_config),
@@ -150,6 +206,7 @@ class ProviderConnectionService:
         self,
         uid: str,
         *,
+        owner_id: str | None = None,
         name: str | None = None,
         enabled: bool | None = None,
         import_existing: bool | None = None,
@@ -158,7 +215,7 @@ class ProviderConnectionService:
         """Rename, enable/disable and/or toggle the dual-layer flags --
         not a config change (that goes through delete + recreate, or a
         future provider-connect-flow redesign; see docs/09-tasks.md)."""
-        current = await self._repository.get(uid)
+        current = await self._repository.get(uid, owner_id=owner_id)
         if current is None:
             return None
         if mirror_structure is True:
@@ -185,4 +242,29 @@ class ProviderConnectionService:
             changes["mirror_structure"] = mirror_structure
         if not changes:
             return current
-        return await self._repository.update(uid, changes)
+        return await self._repository.update(uid, changes, owner_id=owner_id)
+
+    async def delete(
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
+        library: LibrarySoftDeleteProtocol | None = None,
+        placement: PlacementClearProtocol | None = None,
+    ) -> bool:
+        """Soft-delete the connection and trash library files bound to it.
+
+        StorageObjects and provider bytes stay. Optional `library` /
+        `placement` hooks run before the connection row is marked deleted
+        so placement never points at a gone uid and MediaFiles land in
+        trash in the same request. Returns False when the connection is
+        missing or not owned by `owner_id`.
+        """
+        current = await self._repository.get(uid, owner_id=owner_id)
+        if current is None:
+            return False
+        if library is not None:
+            await library.soft_delete_for_connection(uid)
+        if placement is not None:
+            await placement.clear_connection_references(uid)
+        return await self._repository.delete(uid, owner_id=owner_id)

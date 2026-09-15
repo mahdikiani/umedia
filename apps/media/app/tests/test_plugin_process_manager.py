@@ -142,11 +142,15 @@ def test_minimal_env_forces_utf8_filesystem_encoding() -> None:
     """Plugins start with a bare PATH. Without a UTF-8 locale, Python
     uses the ascii codec and macOS filenames with U+202F fail PutObject.
     """
+    import sys
+    from pathlib import Path
+
     env = _minimal_env(None)
     assert env["LANG"] == "C.UTF-8"
     assert env["LC_ALL"] == "C.UTF-8"
     assert env["PYTHONUTF8"] == "1"
-    assert env["PATH"] == os.environ.get("PATH", "")
+    interpreter_bin = str(Path(sys.executable).parent)
+    assert env["PATH"].split(os.pathsep)[0] == interpreter_bin
     assert "UMEDIA_MASTER_KEY" not in env
     assert "DATABASE_URL" not in env
 

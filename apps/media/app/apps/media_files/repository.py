@@ -17,7 +17,12 @@ from sqlalchemy.orm import aliased
 from apps.storage_objects.models import StorageObject
 from utils.pagination import Page
 
-from .models import MediaFile, MediaFileObject, MediaFileStar
+from .models import (
+    MediaFile,
+    MediaFileObject,
+    MediaFileStar,
+    MediaFileTemporaryItem,
+)
 from .permissions import can_read
 from .schemas import (
     DEFAULT_CONTENT_TYPE,
@@ -66,6 +71,12 @@ def _browse_order(sort: str, order: str) -> tuple[Any, ...]:
             func.lower(MediaFile.name),
             MediaFile.uid,
         )
+    elif sort == "size":
+        fields = (
+            func.coalesce(StorageObject.size, 0),
+            func.lower(MediaFile.name),
+            MediaFile.uid,
+        )
     else:
         raise ValueError(f"Unsupported file sort: {sort}")
     direction = "asc" if order == "asc" else "desc"
@@ -97,6 +108,8 @@ def _sort_records(
                     record.uid,
                 )
             )
+        if sort == "size":
+            return record.size, name, record.uid
         raise ValueError(f"Unsupported file sort: {sort}")
 
     reverse = order == "desc"
@@ -128,6 +141,7 @@ def _to_record(
         }
     else:
         derived = {
+            "provider_connection_id": row.provider_connection_id,
             "content_type": DIRECTORY_CONTENT_TYPE
             if row.type == "folder"
             else DEFAULT_CONTENT_TYPE,
@@ -168,7 +182,6 @@ def _prepare(changes: dict[str, Any]) -> dict[str, Any]:
         ]
     for derived in (
         "storage_object_uid",
-        "provider_connection_id",
         "content_reference",
         "content_hash",
         "content_type",
@@ -271,6 +284,15 @@ class MediaFileRepository:
             else:  # all_visible
                 conditions.append(MediaFile.parent_id == parent_id)
                 conditions.append(MediaFile.is_deleted.is_(False))
+
+            conditions.append(
+                or_(
+                    MediaFile.parent_id.is_not(None),
+                    MediaFile.file_metadata["staging"]
+                    .as_boolean()
+                    .is_not(True),
+                ),
+            )
 
             if scope == "owned":
                 total = (
@@ -431,6 +453,83 @@ class MediaFileRepository:
             )
             return set(result.scalars().all())
 
+    async def add_temporary_item(
+        self,
+        *,
+        actor_user_id: str,
+        media_file_uid: str,
+    ) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MediaFileTemporaryItem).where(
+                    MediaFileTemporaryItem.user_id == actor_user_id,
+                    MediaFileTemporaryItem.media_file_id == media_file_uid,
+                ),
+            )
+            if result.scalar_one_or_none() is not None:
+                return False
+            session.add(
+                MediaFileTemporaryItem(
+                    user_id=actor_user_id,
+                    media_file_id=media_file_uid,
+                ),
+            )
+            await session.commit()
+            return True
+
+    async def list_temporary_items(
+        self,
+        *,
+        actor_user_id: str,
+    ) -> "list[MediaFileRecord]":
+        async with self._session_factory() as session:
+            result = await session.execute(
+                _joined_select()
+                .join(
+                    MediaFileTemporaryItem,
+                    MediaFileTemporaryItem.media_file_id == MediaFile.uid,
+                )
+                .where(
+                    MediaFileTemporaryItem.user_id == actor_user_id,
+                    MediaFileTemporaryItem.is_deleted.is_(False),
+                    MediaFile.is_deleted.is_(False),
+                )
+                .order_by(
+                    MediaFileTemporaryItem.created_at,
+                    MediaFileTemporaryItem.uid,
+                ),
+            )
+            return [_to_record(file, obj) for file, obj in result.all()]
+
+    async def remove_temporary_item(
+        self,
+        *,
+        actor_user_id: str,
+        media_file_uid: str,
+    ) -> None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MediaFileTemporaryItem).where(
+                    MediaFileTemporaryItem.user_id == actor_user_id,
+                    MediaFileTemporaryItem.media_file_id == media_file_uid,
+                ),
+            )
+            row = result.scalar_one_or_none()
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
+
+    async def clear_temporary_items(self, *, actor_user_id: str) -> None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MediaFileTemporaryItem).where(
+                    MediaFileTemporaryItem.user_id == actor_user_id,
+                ),
+            )
+            for row in result.scalars():
+                await session.delete(row)
+            await session.commit()
+
     async def list_visible(
         self,
         *,
@@ -570,38 +669,65 @@ class MediaFileRepository:
         self,
         storage_object_uid: str,
     ) -> MediaFileRecord | None:
-        """The MediaFile linked to this object, if any -- how import runs
-        stay idempotent (an already-imported object is never re-created)."""
+        """The first MediaFile linked to this object, if any -- how import
+        runs stay idempotent (an already-imported object is never
+        re-created). Same-storage copies may share one StorageObject
+        across multiple MediaFiles; any link is enough to skip re-import.
+        """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(MediaFileObject).where(
+                select(MediaFileObject)
+                .where(
                     MediaFileObject.storage_object_id == storage_object_uid,
                     MediaFileObject.is_deleted.is_(False),
-                ),
+                )
+                .order_by(MediaFileObject.created_at.asc()),
             )
-            link = result.scalar_one_or_none()
+            link = result.scalars().first()
         if link is None:
             return None
         return await self.get(link.media_file_id)
+
+    async def list_for_connection(
+        self,
+        provider_connection_id: str,
+    ) -> "list[MediaFileRecord]":
+        """Live (not soft-deleted) MediaFiles bound to this connection via
+        the denormalized `provider_connection_id` column -- folders always,
+        files as a placement hint. Callers that also need StorageObject-
+        linked rows union that set themselves (see
+        `MediaFileService.soft_delete_for_connection`)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                _joined_select().where(
+                    MediaFile.provider_connection_id == provider_connection_id,
+                    MediaFile.is_deleted.is_(False),
+                ),
+            )
+            return [_to_record(file, obj) for file, obj in result.all()]
 
     async def find_import_root(
         self,
         *,
         provider_connection_id: str,
-        owner_id: str,
+        owner_id: str | None = None,
     ) -> MediaFileRecord | None:
         """The connection's library root folder, if one exists -- marked
-        with `metadata.import_root` at creation. The metadata check runs
-        in Python over the owner's root folders (SQLite JSON querying
-        buys nothing at this row count)."""
+        with `metadata.import_root` at creation. `owner_id` narrows the
+        search; omit it to find the root regardless of owner (the inbound
+        poller must not create a second root under a different admin).
+        The metadata check runs in Python over root folders (SQLite JSON
+        querying buys nothing at this row count)."""
         async with self._session_factory() as session:
+            conditions = [
+                MediaFile.parent_id.is_(None),
+                MediaFile.type == "folder",
+                MediaFile.is_deleted.is_(False),
+            ]
+            if owner_id is not None:
+                conditions.append(MediaFile.owner_id == owner_id)
             result = await session.execute(
-                _joined_select().where(
-                    MediaFile.owner_id == owner_id,
-                    MediaFile.parent_id.is_(None),
-                    MediaFile.type == "folder",
-                    MediaFile.is_deleted.is_(False),
-                ),
+                _joined_select().where(*conditions),
             )
             for file, obj in result.all():
                 record = _to_record(file, obj)

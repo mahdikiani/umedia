@@ -6,6 +6,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import fastapi_mongo_base.sql.models as sql_models
 import fastapi_mongo_base.sql.session as sql_session
@@ -14,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi_mongo_base.core import app_factory
 from sqlalchemy import text
 
@@ -25,17 +27,19 @@ from apps.auth.user_routes import router as users_router
 from apps.media_files.routes import provider_index_router
 from apps.media_files.routes import public_router as media_files_public_router
 from apps.media_files.routes import router as media_files_router
+from apps.media_files.settings_routes import router as settings_router
 from apps.media_files.uploads import build_upload_router, run_periodic_cleanup
-from apps.media_files.worker import purge_expired_trash
+from apps.media_files.worker import poll_inbound_syncs, purge_expired_trash
+from apps.provider_connections.oauth import OAuthStateStore
 from apps.provider_connections.routes import router as provider_connections_router
 from apps.s3.routes import register_s3_exception_handler
 from apps.s3.routes import root_router as s3_root_router
 from apps.s3.routes import router as s3_router
 from apps.s3.vhost import S3VirtualHostRewriteMiddleware
-from apps.user_access_keys.routes import router as access_keys_router
 from apps.user_access_keys.factory import (
     build_user_access_key_service_from_state,
 )
+from apps.user_access_keys.routes import router as access_keys_router
 from plugins.process_manager import PluginProcessManager, PluginStartError
 from plugins.registry import PluginRegistry
 from utils.crypto import CredentialCipher
@@ -87,6 +91,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     sql_session.async_session = session_factory
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.settings = settings
+    # Pending OAuth CSRF states for the Google Drive paste flow
+    # (apps/provider_connections/oauth.py). In-memory is enough for a
+    # single container; multi-replica would need a shared store.
+    app.state.oauth_states = OAuthStateStore()
     app.state.credential_cipher = CredentialCipher.from_environment(
         data_dir=settings.data_dir,
         env_key=settings.master_key,
@@ -101,8 +110,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # `import_existing` (apps/provider_connections/routes.py) -- same
     # keep-a-strong-reference + wait-on-shutdown deal as the tus tasks.
     app.state.import_tasks = set()
-    # Connection uids currently running an explicit `POST .../sync` so a
-    # second click returns 409 instead of stacking walks.
+    # Background library transfer jobs (`POST /files/transfers`) -- same
+    # keep-a-strong-reference + wait-on-shutdown deal as import/tus tasks.
+    app.state.transfer_tasks = set()
+    # Connection uids currently running a sync (manual POST or the
+    # interval poller) so a second click returns 409 instead of stacking
+    # walks, and GET /providers/{uid}/sync stays truthful for both.
     app.state.active_syncs = set()
 
     # Every new account (bootstrap admin included) gets a default access
@@ -138,6 +151,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         timezone=pytz.timezone("Asia/Tehran"),
         args=[session_factory],
     )
+    scheduler.add_job(
+        poll_inbound_syncs,
+        "interval",
+        seconds=settings.sync_poll_interval_seconds,
+        max_instances=1,
+        coalesce=True,
+        args=[app],
+        id="inbound-sync-poll",
+    )
     scheduler.start()
 
     logging.info("Startup complete")
@@ -148,7 +170,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         tus_cleanup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await tus_cleanup_task
-        background_tasks = app.state.tus_finalize_tasks | app.state.import_tasks
+        background_tasks = (
+            app.state.tus_finalize_tasks
+            | app.state.import_tasks
+            | app.state.transfer_tasks
+        )
         if background_tasks:
             # Bounded, same rationale as PluginProcessManager's graceful
             # stop: let in-flight uploads/imports finish writing rather
@@ -200,6 +226,7 @@ server_router.include_router(access_keys_router)
 server_router.include_router(provider_connections_router)
 server_router.include_router(media_files_router)
 server_router.include_router(media_files_public_router)
+server_router.include_router(settings_router)
 server_router.include_router(s3_router, prefix="/s3")
 server_router.include_router(provider_index_router)
 server_router.include_router(
@@ -215,6 +242,14 @@ server_router.include_router(
 app.include_router(server_router, prefix=config.Settings.base_path)
 # Cyberduck lists at `GET /` on the website hostname (no `/api/v1/s3`).
 app.include_router(s3_root_router)
+
+# MIME icons copied from ice/media/statics into this process. Served here
+# so the UI never depends on an external host.
+app.mount(
+    f"{config.Settings.base_path}/statics",
+    StaticFiles(directory=Path(__file__).resolve().parent.parent / "statics"),
+    name="statics",
+)
 
 # S3 clients expect the gateway's errors (auth failures included) as
 # S3-style XML, not the JSON error envelope the rest of the API uses.

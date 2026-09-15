@@ -1,28 +1,44 @@
 """Provider connection REST resources.
 
-Reads are for every authenticated user; writes (create/update/delete)
-are administrator-only via the `require_admin` dependency.
+Every authenticated user lists/creates/updates/deletes **their own**
+connections. Provider type `local` is admin-only (create and use).
 """
 
 import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Request, Response, status
 from fastapi_mongo_base.errors import NotFoundError
+from usso.lite.models import LocalUser
 
-from apps.auth.middleware import require_admin
-
+from .oauth import GoogleOAuthCredentials, OAuthStateStore
+from .oauth_service import ProviderOAuthService
 from .repository import ProviderConnectionRepository
 from .schemas import (
+    OAuthCompleteRequest,
+    OAuthStartRequest,
+    OAuthStartResponse,
     ProviderConnectionCreate,
     ProviderConnectionResponse,
     ProviderConnectionUpdate,
     ProviderTypeResponse,
 )
-from .services import ProviderConnectionService, build_plugin_connector
+from .services import (
+    LOCAL_PROVIDER_TYPE,
+    ProviderConnectionService,
+    build_plugin_connector,
+)
 
 router = APIRouter(tags=["Storage providers"])
+
+
+def _user(request: Request) -> LocalUser:
+    return request.state.user
+
+
+def _is_admin(user: LocalUser) -> bool:
+    return "admin" in (user.roles or [])
 
 
 def _repository(request: Request) -> ProviderConnectionRepository:
@@ -38,9 +54,28 @@ def _service(request: Request) -> ProviderConnectionService:
     )
 
 
+def _oauth_credentials(request: Request) -> GoogleOAuthCredentials:
+    settings = request.app.state.settings
+    return GoogleOAuthCredentials(
+        client_id=settings.google_oauth_client_id,
+        client_secret=settings.google_oauth_client_secret,
+        redirect_uri=settings.google_oauth_redirect_uri,
+    )
+
+
+def _oauth_service(request: Request) -> ProviderOAuthService:
+    store: OAuthStateStore = request.app.state.oauth_states
+    return ProviderOAuthService(
+        credentials=_oauth_credentials(request),
+        state_store=store,
+        connections=_service(request),
+    )
+
+
 def _response(item: object) -> ProviderConnectionResponse:
     return ProviderConnectionResponse(
         uid=item.uid,
+        owner_id=getattr(item, "owner_id", None),
         provider_type=item.provider_type,
         name=item.name,
         status=item.status,
@@ -97,8 +132,11 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
     Sourced from the plugin registry's loaded manifests
     (docs/03-provider-system.md) -- one plugin process can register
     several entries here (e.g. `rclone`'s `s3`/`google_drive`).
+    Non-admins do not see `local` (admin-only storage).
     """
     registry = request.app.state.plugin_registry
+    user = _user(request)
+    include_local = _is_admin(user)
     return [
         ProviderTypeResponse(
             id=item.id,
@@ -121,6 +159,7 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
             ],
         )
         for item in registry.provider_types()
+        if include_local or item.id != LOCAL_PROVIDER_TYPE
     ]
 
 
@@ -129,8 +168,12 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
     response_model=list[ProviderConnectionResponse],
 )
 async def list_connections(request: Request) -> list[ProviderConnectionResponse]:
-    """List configured storage connections without credentials."""
-    return [_response(item) for item in await _repository(request).list()]
+    """List the caller's storage connections without credentials."""
+    user = _user(request)
+    return [
+        _response(item)
+        for item in await _repository(request).list(owner_id=user.uid)
+    ]
 
 
 @router.post(
@@ -141,7 +184,6 @@ async def list_connections(request: Request) -> list[ProviderConnectionResponse]
 async def create_connection(
     data: ProviderConnectionCreate,
     request: Request,
-    admin: Annotated[object, Depends(require_admin)],
 ) -> ProviderConnectionResponse:
     """Validate, encrypt and persist a storage connection.
 
@@ -150,25 +192,72 @@ async def create_connection(
     `apps.provider_connections.services.build_plugin_connector`.
 
     With `import_existing`, the import job (remote objects ->
-    StorageObjects + library MediaFiles owned by the creating admin) is
+    StorageObjects + library MediaFiles owned by the creating user) is
     scheduled in the background right after -- the response never waits
-    on it.
+    on it. `local` requires the administrator role.
     """
+    user = _user(request)
     connection = await _service(request).create(
         provider_type=data.provider_type,
         name=data.name,
         config=data.config,
+        owner_id=user.uid,
+        is_admin=_is_admin(user),
         import_existing=data.import_existing,
         mirror_structure=data.mirror_structure,
     )
-    _schedule_import(request, connection.uid, admin.uid)
+    _schedule_import(request, connection.uid, user.uid)
+    return _response(connection)
+
+
+@router.post(
+    "/providers/oauth/start",
+    response_model=OAuthStartResponse,
+)
+async def oauth_start(
+    data: OAuthStartRequest,
+    request: Request,
+) -> OAuthStartResponse:
+    """Begin Google Drive OAuth (localhost-redirect paste flow).
+
+    Returns an authorization URL the UI shows / opens; the server does
+    **not** receive Google's redirect. Pending `state` is kept in memory
+    for CSRF checks on `/providers/oauth/complete` (single-container).
+    """
+    _user(request)  # authenticated — same gate as POST /providers
+    started = _oauth_service(request).start(provider_type=data.provider_type)
+    return OAuthStartResponse(**started)
+
+
+@router.post(
+    "/providers/oauth/complete",
+    response_model=ProviderConnectionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def oauth_complete(
+    data: OAuthCompleteRequest,
+    request: Request,
+) -> ProviderConnectionResponse:
+    """Exchange a pasted redirect/code/token and create the connection."""
+    user = _user(request)
+    connection = await _oauth_service(request).complete(
+        provider_type=data.provider_type,
+        name=data.name,
+        callback=data.callback,
+        state=data.state,
+        root_folder_id=data.root_folder_id,
+        import_existing=data.import_existing,
+        mirror_structure=data.mirror_structure,
+        owner_id=user.uid,
+        is_admin=_is_admin(user),
+    )
+    _schedule_import(request, connection.uid, user.uid)
     return _response(connection)
 
 
 @router.patch(
     "/providers/{uid}",
     response_model=ProviderConnectionResponse,
-    dependencies=[Depends(require_admin)],
 )
 async def update_connection(
     uid: str,
@@ -176,9 +265,12 @@ async def update_connection(
     request: Request,
 ) -> ProviderConnectionResponse:
     """Rename, enable/disable and/or toggle the dual-layer flags -- not
-    its config, see `ProviderConnectionService.update`."""
+    its config, see `ProviderConnectionService.update`. Owner only;
+    missing or unowned returns 404."""
+    user = _user(request)
     updated = await _service(request).update(
         uid,
+        owner_id=user.uid,
         name=data.name,
         enabled=data.enabled,
         import_existing=data.import_existing,
@@ -192,10 +284,23 @@ async def update_connection(
 @router.delete(
     "/providers/{uid}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_admin)],
 )
 async def delete_connection(uid: str, request: Request) -> Response:
-    """Soft-delete a provider connection."""
-    if not await _repository(request).delete(uid):
+    """Soft-delete a provider connection the caller owns.
+
+    Bound/synced MediaFiles go to trash; StorageObjects and remote bytes
+    are kept. Placement settings that referenced this connection are cleared.
+    """
+    from apps.media_files.factory import build_media_file_service
+    from apps.media_files.settings_repository import InstanceSettingsRepository
+
+    user = _user(request)
+    deleted = await _service(request).delete(
+        uid,
+        owner_id=user.uid,
+        library=build_media_file_service(request),
+        placement=InstanceSettingsRepository(request.app.state.session_factory),
+    )
+    if not deleted:
         raise _not_found()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -3,9 +3,6 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS fast-uv
 WORKDIR /app
 
 COPY pyproject.toml pyproject.toml
-# vendor/: usso.lite isn't on PyPI yet, pyproject.toml's [tool.uv.sources]
-# points at a locally-built wheel here -- see that file's comment.
-COPY vendor/ vendor/
 
 # RUN uv sync --no-dev --no-cache --no-install-project
 RUN uv pip install --system --no-cache-dir .

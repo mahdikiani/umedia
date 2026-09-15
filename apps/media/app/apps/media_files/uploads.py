@@ -40,8 +40,9 @@ CLEANUP_INTERVAL_SECONDS = 60 * 60
 async def _validate_metadata(request: Request, metadata: dict[str, str]) -> None:
     """Fail fast, before any bytes are staged: the fields
     `MediaFileService.upload()` cannot proceed without, plus that the
-    connection actually exists. `filetype` is required by tuspyserver's
-    own resume (`HEAD`) route -- see apps/resources/uploads.py."""
+    connection actually exists and is usable by the caller. `filetype`
+    is required by tuspyserver's own resume (`HEAD`) route -- see
+    apps/resources/uploads.py."""
     if not metadata.get("name"):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -53,21 +54,31 @@ async def _validate_metadata(request: Request, metadata: dict[str, str]) -> None
             "Upload-Metadata must include 'filetype'",
         )
     provider_connection_id = metadata.get("provider_connection_id")
-    if not provider_connection_id:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Upload-Metadata must include 'provider_connection_id'",
-        )
-    connections = ProviderConnectionRepository(request.app.state.session_factory)
-    if await connections.get(provider_connection_id) is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Unknown provider_connection_id '{provider_connection_id}'",
-        )
+    if provider_connection_id:
+        from apps.provider_connections.services import connection_usable_by
+
+        connections = ProviderConnectionRepository(request.app.state.session_factory)
+        connection = await connections.get(provider_connection_id)
+        user = request.state.user
+        is_admin = "admin" in (user.roles or [])
+        if connection is None or not connection_usable_by(
+            connection,
+            actor_user_id=user.uid,
+            is_admin=is_admin,
+        ):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Unknown provider_connection_id '{provider_connection_id}'",
+            )
 
 
 async def _finalize(
-    app: FastAPI, file_path: str, metadata: dict[str, str], *, owner_id: str,
+    app: FastAPI,
+    file_path: str,
+    metadata: dict[str, str],
+    *,
+    owner_id: str,
+    is_admin: bool,
 ) -> None:
     """Runs detached, after the hook that scheduled it has returned.
     Never raises; the terminal outcome lives in the MediaFile row's own
@@ -81,12 +92,13 @@ async def _finalize(
         content_type = metadata.get("filetype") or mimetypes.guess_type(name)[0]
         service = build_media_file_service_from_state(app.state)
         await service.upload(
-            provider_connection_id=metadata["provider_connection_id"],
+            provider_connection_id=metadata.get("provider_connection_id") or None,
             parent_id=metadata.get("parent_id") or None,
             name=name,
             content=content,
             content_type=content_type,
             owner_id=owner_id,
+            is_admin=is_admin,
         )
     except Exception:
         logger.exception("Finalizing tus upload '%s' failed", file_path)
@@ -143,12 +155,19 @@ async def run_periodic_cleanup(upload_dir: Path) -> None:
 
 
 def _schedule_finalize(
-    app: FastAPI, file_path: str, metadata: dict[str, str], *, owner_id: str,
+    app: FastAPI,
+    file_path: str,
+    metadata: dict[str, str],
+    *,
+    owner_id: str,
+    is_admin: bool,
 ) -> None:
     # asyncio holds only a weak reference to created tasks; the app.state
     # set keeps finalizes alive and lets shutdown wait on them.
     task = asyncio.create_task(
-        _finalize(app, file_path, metadata, owner_id=owner_id),
+        _finalize(
+            app, file_path, metadata, owner_id=owner_id, is_admin=is_admin,
+        ),
     )
     app.state.tus_finalize_tasks.add(task)
     task.add_done_callback(app.state.tus_finalize_tasks.discard)
@@ -170,11 +189,13 @@ def build_upload_router(*, upload_dir: Path) -> APIRouter:
         request: Request,
     ) -> Callable[[str, dict[str, str]], None]:
         def hook(file_path: str, metadata: dict[str, str]) -> None:
+            user = request.state.user
             _schedule_finalize(
                 request.app,
                 file_path,
                 metadata,
-                owner_id=request.state.user.uid,
+                owner_id=user.uid,
+                is_admin="admin" in (user.roles or []),
             )
 
         return hook

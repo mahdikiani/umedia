@@ -236,17 +236,23 @@ async def test_non_admins_are_read_only(
         )).status_code == 403
         assert (await member.delete(f"/users/{member_uid}")).status_code == 403
 
-        # Provider connections: reads for every authenticated user,
-        # writes for administrators only.
+        # Provider connections: any authenticated user manages their own;
+        # `local` remains admin-only. Missing/unowned mutate as 404.
         assert (await member.get("/provider-types")).status_code == 200
+        types = (await member.get("/provider-types")).json()
+        assert all(item["id"] != "local" for item in types)
         assert (await member.get("/providers")).status_code == 200
+        assert (await member.get("/settings/placement")).status_code == 200
         blocked = await member.post(
             "/providers",
             json={"provider_type": "local", "name": "x", "config": {}},
         )
         assert blocked.status_code == 403
-        assert blocked.json()["error_code"] == "admin_required"
+        assert blocked.json()["error_code"] == "local_admin_required"
+        assert (await member.patch(
+            "/settings/placement", json={"policy": "fill_order"},
+        )).status_code == 403
         assert (await member.patch(
             "/providers/some-uid", json={"name": "y"},
-        )).status_code == 403
-        assert (await member.delete("/providers/some-uid")).status_code == 403
+        )).status_code == 404
+        assert (await member.delete("/providers/some-uid")).status_code == 404

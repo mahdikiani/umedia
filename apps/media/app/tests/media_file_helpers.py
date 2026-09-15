@@ -28,6 +28,8 @@ class FakeConnection:
     enabled: bool = True
     import_existing: bool = False
     mirror_structure: bool = False
+    # None = unrestricted (legacy test fakes); production always sets it.
+    owner_id: str | None = None
 
 
 class FakeConnectionRepository:
@@ -37,8 +39,31 @@ class FakeConnectionRepository:
     def add(self, connection: FakeConnection) -> None:
         self._connections[connection.uid] = connection
 
-    async def get(self, uid: str) -> FakeConnection | None:
-        return self._connections.get(uid)
+    async def get(
+        self, uid: str, *, owner_id: str | None = None,
+    ) -> FakeConnection | None:
+        connection = self._connections.get(uid)
+        if connection is None:
+            return None
+        if (
+            owner_id is not None
+            and connection.owner_id is not None
+            and connection.owner_id != owner_id
+        ):
+            return None
+        return connection
+
+    async def list(
+        self, *, owner_id: str | None = None,
+    ) -> list[FakeConnection]:
+        items = list(self._connections.values())
+        if owner_id is None:
+            return items
+        return [
+            connection
+            for connection in items
+            if connection.owner_id is None or connection.owner_id == owner_id
+        ]
 
 
 class FakeMediaPluginGateway:
@@ -51,6 +76,9 @@ class FakeMediaPluginGateway:
         self.calls: list[tuple] = []
         self.fail_create = False
         self.fail_update = False
+        #: Raise from `list_resources` when `parent_id` is in this set.
+        #: Used to prove an incomplete walk never looks like mass deletion.
+        self.fail_list_at: set[str | None] = set()
         #: parent_ref (None = root) -> resources at that level, per connection:
         #: {connection_id: {parent_ref: [PluginResource, ...]}}
         self.listings: dict[str, dict[str | None, list[PluginResource]]] = {}
@@ -66,6 +94,8 @@ class FakeMediaPluginGateway:
         self, provider_connection_id: str, *, parent_id: str | None = None,
     ) -> list[PluginResource]:
         self.calls.append(("list", provider_connection_id, parent_id))
+        if parent_id in self.fail_list_at:
+            raise RuntimeError("simulated plugin crash on list")
         return list(
             self.listings.get(provider_connection_id, {}).get(parent_id, []),
         )
@@ -76,11 +106,16 @@ class FakeMediaPluginGateway:
         metadata: CreateResourceIn,
         content: bytes,
     ) -> PluginResource:
-        self.calls.append(("create", provider_connection_id, metadata.name))
+        self.calls.append(
+            ("create", provider_connection_id, metadata.name, metadata.parent_id),
+        )
         if self.fail_create:
             raise RuntimeError("simulated plugin crash on create")
-        ref = f"ref-{self._next_id}"
-        self._next_id += 1
+        if metadata.parent_id:
+            ref = f"{metadata.parent_id}/{metadata.name}"
+        else:
+            ref = f"ref-{self._next_id}"
+            self._next_id += 1
         self.store[ref] = content
         return PluginResource(
             id=ref,
@@ -170,10 +205,12 @@ class Harness:
     objects: object
     plugins: FakeMediaPluginGateway
     connections: FakeConnectionRepository
+    settings: object = field(default=None)
     #: The real `UserAccessKeyService` (throwaway Fernet cipher) --
     #: temporary share links are signed with per-user access keys.
     access_keys: object = field(default=None)
     engine: object = field(default=None)
+    session_factory: object = field(default=None)
 
 
 async def build_harness(tmp_path: Path, *connections: FakeConnection) -> Harness:
@@ -181,8 +218,10 @@ async def build_harness(tmp_path: Path, *connections: FakeConnection) -> Harness
     from cryptography.fernet import Fernet
     from fastapi_mongo_base.sql.models import BaseEntity
 
+    from apps.media_files.models import LibraryTransfer  # noqa: F401
     from apps.media_files.repository import MediaFileRepository
     from apps.media_files.services import MediaFileService
+    from apps.media_files.settings_repository import InstanceSettingsRepository
     from apps.storage_objects.repository import StorageObjectRepository
     from apps.user_access_keys.repository import UserAccessKeyRepository
     from apps.user_access_keys.services import UserAccessKeyService
@@ -204,9 +243,11 @@ async def build_harness(tmp_path: Path, *connections: FakeConnection) -> Harness
         UserAccessKeyRepository(session_factory),
         CredentialCipher(Fernet.generate_key()),
     )
+    settings_repo = InstanceSettingsRepository(session_factory)
     service = MediaFileService(
         files, objects, plugins, connection_repo,
         access_keys=access_keys,
+        settings=settings_repo,
     )
     return Harness(
         service=service,
@@ -214,6 +255,8 @@ async def build_harness(tmp_path: Path, *connections: FakeConnection) -> Harness
         objects=objects,
         plugins=plugins,
         connections=connection_repo,
+        settings=settings_repo,
         access_keys=access_keys,
         engine=engine,
+        session_factory=session_factory,
     )

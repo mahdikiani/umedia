@@ -271,3 +271,94 @@ async def test_ours_newer_skips_push_without_mirror(harness: Harness) -> None:
     )
     assert result["pushed"] == 0
     assert harness.plugins.plugin_calls("update") == []
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_ingest_or_missing_mark_user_dumps(
+    tmp_path: Path,
+) -> None:
+    """Local uploads live under `.umedia/users/...`; sync must not turn
+    that dump into library folders, nor trash the uploaded file."""
+    harness = await build_harness(
+        tmp_path,
+        FakeConnection(
+            uid=CONNECTION_ID, name="Disk", provider_type="local",
+        ),
+    )
+    try:
+        uploaded = await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name="notes.txt",
+            content=b"mine",
+            owner_id=ACTOR_ID,
+            is_admin=True,
+        )
+        dump_dir = f".umedia/users/{ACTOR_ID}/{uploaded.uid}"
+        harness.plugins.listings[CONNECTION_ID] = {
+            None: [
+                PluginResource(
+                    id="photos", type="folder", name="photos", parent_id=None,
+                ),
+                PluginResource(
+                    id=".umedia", type="folder", name=".umedia", parent_id=None,
+                ),
+            ],
+            "photos": [],
+            ".umedia": [
+                PluginResource(
+                    id=".umedia/users", type="folder", name="users",
+                    parent_id=".umedia",
+                ),
+            ],
+            ".umedia/users": [
+                PluginResource(
+                    id=f".umedia/users/{ACTOR_ID}",
+                    type="folder",
+                    name=ACTOR_ID,
+                    parent_id=".umedia/users",
+                ),
+            ],
+            f".umedia/users/{ACTOR_ID}": [
+                PluginResource(
+                    id=dump_dir, type="folder", name=uploaded.uid,
+                    parent_id=f".umedia/users/{ACTOR_ID}",
+                ),
+            ],
+            dump_dir: [
+                PluginResource(
+                    id=uploaded.content_reference,
+                    type="file",
+                    name="notes.txt",
+                    parent_id=dump_dir,
+                    size=4,
+                ),
+            ],
+        }
+
+        result = await harness.service.import_from_provider(
+            CONNECTION_ID, actor_user_id=ACTOR_ID,
+        )
+
+        assert result["imported"] == 1
+        assert result["missing"] == 0
+
+        roots = await harness.service.list_children(
+            None, actor_user_id=ACTOR_ID,
+        )
+        assert sorted(item.name for item in roots.items) == ["Disk", "notes.txt"]
+        disk = next(item for item in roots.items if item.name == "Disk")
+        children = await harness.service.list_children(
+            disk.uid, actor_user_id=ACTOR_ID,
+        )
+        assert [item.name for item in children.items] == ["photos"]
+
+        obj = await harness.objects.get(uploaded.storage_object_uid)
+        assert obj is not None
+        assert obj.status == "active"
+        listed = await harness.service.get(
+            uploaded.uid, actor_user_id=ACTOR_ID,
+        )
+        assert not listed.is_deleted
+    finally:
+        await harness.engine.dispose()

@@ -34,6 +34,7 @@ describe("dashboard search", () => {
     );
 
     const input = screen.getByPlaceholderText("Search all files and folders…");
+    expect(input).toHaveClass("bg-card");
     fireEvent.change(input, { target: { value: "report" } });
 
     await waitFor(() => {

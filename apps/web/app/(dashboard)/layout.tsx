@@ -5,6 +5,7 @@ import { Suspense, useEffect, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { DashboardSearch } from "@/components/dashboard-search";
+import { LastLocationTracker } from "@/components/last-location-tracker";
 import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Separator } from "@/components/ui/separator";
@@ -33,7 +34,7 @@ export default function DashboardLayout({
         // separately either duplicating this check or rendering an empty
         // "no storage" state that's really just onboarding wearing a
         // sidebar. `/onboarding` mirrors this check the other way,
-        // sending an admin who already has a connection on to `/home`.
+        // sending a user who already has a connection on to their last page.
         return api<ProviderConnection[]>("/providers").then(
           (connections) => {
             if (connections.length === 0) {
@@ -63,6 +64,7 @@ export default function DashboardLayout({
     <SidebarProvider>
       <Suspense fallback={null}>
         <AppSidebar />
+        <LastLocationTracker />
       </Suspense>
       <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">

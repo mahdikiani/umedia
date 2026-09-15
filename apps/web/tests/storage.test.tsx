@@ -117,7 +117,7 @@ describe("storage page", () => {
     render(<StoragePage />);
 
     expect(await screen.findByText("report.pdf")).toBeInTheDocument();
-    expect(screen.getByText("application/pdf")).toBeInTheDocument();
+    expect(screen.getByText("PDF")).toBeInTheDocument();
     expect(screen.getByText("archive/report.pdf")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Provider connection" })).toHaveTextContent(
       "Local files",

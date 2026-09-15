@@ -65,7 +65,7 @@ describe("app sidebar", () => {
     );
   });
 
-  it("lists Home, Files, Storages, Starred, Trash, then Settings and Log out", async () => {
+  it("lists Home, Files, Storages, Starred, Trash, then Storage settings, Account, Log out", async () => {
     renderSidebar();
 
     expect(await screen.findByRole("link", { name: /Home/ })).toHaveAttribute(
@@ -79,7 +79,11 @@ describe("app sidebar", () => {
       "/starred",
     );
     expect(screen.getByRole("link", { name: "Trash" })).toHaveAttribute("href", "/trash");
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Storage settings" })).toHaveAttribute(
+      "href",
+      "/settings/storage",
+    );
+    expect(screen.getByRole("link", { name: "Account" })).toHaveAttribute(
       "href",
       "/settings",
     );
@@ -87,9 +91,9 @@ describe("app sidebar", () => {
 
     const storages = screen.getByRole("button", { name: "Storages" });
     const starred = screen.getByRole("link", { name: "Starred" });
-    const settings = screen.getByRole("link", { name: "Settings" });
+    const account = screen.getByRole("link", { name: "Account" });
     expect(storages.compareDocumentPosition(starred) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(starred.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(starred.compareDocumentPosition(account) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("expands Storages to list each provider connection", async () => {
@@ -103,11 +107,23 @@ describe("app sidebar", () => {
       "href",
       "/storage?provider=prov-b",
     );
+    expect(
+      screen.getByRole("link", { name: "MinIO" }).querySelector(
+        "[data-provider-type='s3']",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Google Drive" }).querySelector(
+        "[data-provider-type='google_drive']",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows a used-space card", async () => {
     renderSidebar();
-    expect(await screen.findByText("Used space")).toBeInTheDocument();
+    const usedSpace = await screen.findByText("Used space");
+    expect(usedSpace.closest("[data-slot=card]")).toHaveClass("bg-card");
+    expect(usedSpace.closest("[data-slot=card]")).not.toHaveClass("bg-sidebar");
     await waitFor(() => {
       expect(screen.getByText("1.5 KB")).toBeInTheDocument();
     });
