@@ -196,16 +196,9 @@ export function FileBrowserPane({
   const [dropActive, setDropActive] = useState(false);
   const [folderDropUid, setFolderDropUid] = useState<string | null>(null);
 
-  async function refresh() {
-    const page = await api<Page<MediaFileItem>>(
-      filesListPath(parentId, query, sort, order),
-    );
-    setItems(page.items);
-    setHasMore(page.has_more);
-  }
-
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void api<Page<MediaFileItem>>(filesListPath(parentId, query, sort, order))
       .then((page) => {

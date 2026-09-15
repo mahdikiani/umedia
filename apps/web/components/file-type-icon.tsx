@@ -1,3 +1,5 @@
+/* eslint-disable @next/next/no-img-element */
+
 import type { FileTypeSource } from "@/lib/file-type";
 import { fileIconUrl } from "@/lib/file-type";
 import { cn } from "@/lib/utils";

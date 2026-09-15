@@ -2,7 +2,7 @@
 
 import { FolderOpen, KeyRound } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 
 import { GoogleOidcLogin } from "@/components/google-oidc-login";
 import { useLocale } from "@/components/locale-provider";
@@ -16,7 +16,7 @@ import { ApiError, api, type AuthState } from "@/lib/api";
 import { useCopy } from "@/lib/copy";
 import { readLastLocation } from "@/lib/last-location";
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { locale } = useLocale();
@@ -168,5 +168,19 @@ export default function LoginPage() {
         </Card>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="grid min-h-screen place-items-center bg-background">
+          <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+        </main>
+      }
+    >
+      <LoginPageContent />
+    </Suspense>
   );
 }

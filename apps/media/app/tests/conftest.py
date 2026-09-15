@@ -67,6 +67,8 @@ def setup_debugpy() -> None:
 @pytest_asyncio.fixture(scope="module")
 async def client() -> AsyncGenerator[httpx.AsyncClient]:
     """ASGI client with the app's real lifespan (DB engine, auth service)."""
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{_tmp_db.name}{suffix}").unlink(missing_ok=True)
     async with LifespanManager(fastapi_app):
         # Production creates this app's own tables via `alembic upgrade
         # head` (docker-entrypoint.sh) before the process starts -- tests

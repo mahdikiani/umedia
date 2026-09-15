@@ -63,6 +63,7 @@ export function TransferDestinationDialog({
 
   useEffect(() => {
     if (!open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setParentId(null);
     setCrumbs([{ uid: null, name: "Files" }]);
   }, [open]);
@@ -70,6 +71,7 @@ export function TransferDestinationDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void api<Page<MediaFileItem>>(foldersPath(parentId))
       .then((page) => {

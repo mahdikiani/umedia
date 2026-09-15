@@ -13,8 +13,10 @@ import LoginPage from "@/app/login/page";
 // exhausting a test's `mockResolvedValueOnce` queue before the actual
 // interaction under test ever runs.
 const mockRouter = { replace: vi.fn(), push: vi.fn() };
+const mockSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
+  useSearchParams: () => mockSearchParams,
 }));
 
 describe("login page", () => {
@@ -26,6 +28,7 @@ describe("login page", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
+    mockSearchParams.forEach((_, key) => mockSearchParams.delete(key));
     vi.stubGlobal("localStorage", {
       getItem: vi.fn().mockReturnValue(null),
       setItem: vi.fn(),
@@ -63,19 +66,36 @@ describe("login page", () => {
       "fetch",
       vi
         .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: async () => ({ configured: true, authenticated: false }),
-        })
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 401,
-          json: async () => ({
-            message: { en: "Invalid credentials.", fa: "اطلاعات ورود صحیح نیست." },
-            error_code: "invalid_credentials",
-            detail: "Invalid credentials.",
-          }),
+        .mockImplementation((url: string, init?: RequestInit) => {
+          if (url.includes("/auth/state")) {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({ configured: true, authenticated: false }),
+            });
+          }
+          if (url.includes("/auth/refresh")) {
+            return Promise.resolve({
+              ok: false,
+              status: 401,
+              json: async () => ({}),
+            });
+          }
+          if (url.includes("/auth/sessions") && init?.method === "POST") {
+            return Promise.resolve({
+              ok: false,
+              status: 401,
+              json: async () => ({
+                message: {
+                  en: "Invalid credentials.",
+                  fa: "اطلاعات ورود صحیح نیست.",
+                },
+                error_code: "invalid_credentials",
+                detail: "Invalid credentials.",
+              }),
+            });
+          }
+          throw new Error(`Unexpected request: ${url}`);
         }),
     );
 

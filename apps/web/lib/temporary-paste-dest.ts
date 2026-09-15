@@ -26,8 +26,10 @@ export type TemporaryPasteDestInput = {
 export function resolveTemporaryPasteDest(
   input: TemporaryPasteDestInput,
 ): string | null {
-  // Implement the three rules above (about 5 lines).
-  throw new Error("resolveTemporaryPasteDest not implemented");
+  if (!input.dualPane || input.selectedPane === "primary") {
+    return input.primaryParentId;
+  }
+  return input.secondaryParentId;
 }
 
 /**

@@ -159,6 +159,7 @@ function FilesBrowser() {
   const [typeFilter, setTypeFilter] = useState<string | null>(urlTypeFilter);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSort(urlSort.sort);
     setOrder(urlSort.order);
     setGroupBy(urlGroupBy);
@@ -208,6 +209,7 @@ function FilesBrowser() {
 
   useEffect(() => {
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDualPane(localStorage.getItem(DUAL_PANE_KEY) === "1");
       const saved = localStorage.getItem(SECONDARY_FOLDER_KEY);
       setSecondaryParentId(saved && saved.length > 0 ? saved : null);
@@ -360,7 +362,6 @@ function FilesBrowser() {
   }
 
   function startSingleUpload(file: File): Promise<void> {
-    // eslint-disable-next-line react-hooks/purity
     const key = `${file.name}-${file.size}-${Date.now()}`;
     return new Promise<void>((resolve) => {
       const upload = new tus.Upload(file, {
@@ -419,7 +420,9 @@ function FilesBrowser() {
   }
 
   const uploadFilesRef = useRef(uploadFiles);
-  uploadFilesRef.current = uploadFiles;
+  useEffect(() => {
+    uploadFilesRef.current = uploadFiles;
+  });
 
   useEffect(() => {
     function onDragEnter(event: DragEvent) {

@@ -1,9 +1,34 @@
 import { JSDOM } from "jsdom";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   pretendToBeVisual: true,
   url: "https://drive.uln.me",
+});
+
+const storage = new Map();
+const localStorage = {
+  getItem: (key) => storage.get(key) ?? null,
+  setItem: (key, value) => storage.set(key, String(value)),
+  removeItem: (key) => storage.delete(key),
+  clear: () => storage.clear(),
+  key: (index) => [...storage.keys()][index] ?? null,
+  get length() {
+    return storage.size;
+  },
+};
+
+Object.defineProperty(dom.window, "localStorage", {
+  configurable: true,
+  value: localStorage,
+});
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: localStorage,
+});
+Object.defineProperty(globalThis, "FormData", {
+  configurable: true,
+  value: dom.window.FormData,
 });
 
 for (const property of Object.getOwnPropertyNames(dom.window)) {
@@ -67,3 +92,8 @@ if (typeof vi.unstubAllGlobals !== "function") {
     },
   });
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
+});

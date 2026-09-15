@@ -7,5 +7,6 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     environmentOptions: { jsdom: { url: "https://drive.uln.me" } },
+    setupFiles: ["./tests/bun-test-setup.js"],
   },
 });

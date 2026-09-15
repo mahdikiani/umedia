@@ -74,6 +74,7 @@ export function AppSidebar() {
 
   useEffect(() => {
     if (pathname.startsWith("/storage")) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStoragesOpen(true);
     }
   }, [pathname]);

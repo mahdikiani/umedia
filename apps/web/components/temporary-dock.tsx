@@ -36,19 +36,17 @@ export function TemporaryDock({
   currentParentId,
   addToTemporary,
 }: TemporaryDockProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [items, setItems] = useState<MediaFileItem[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    try {
-      setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
-    } catch {
-      // ignore
-    }
-  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -64,6 +62,7 @@ export function TemporaryDock({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, [reload, refreshToken]);
 

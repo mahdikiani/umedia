@@ -18,6 +18,7 @@ async def test_bootstrap_login_and_browse_providers(
         "configured": False,
         "authenticated": False,
         "user": None,
+        "oidc_providers": [],
     }
     assert (await client.get("/provider-types")).status_code == 401
 

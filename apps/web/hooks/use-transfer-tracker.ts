@@ -19,7 +19,9 @@ export function useTransferTracker(onSettled?: () => void) {
   const dismissedRef = useRef<Set<string>>(new Set());
   const dismissTimersRef = useRef<Map<string, number>>(new Map());
   const onSettledRef = useRef(onSettled);
-  onSettledRef.current = onSettled;
+  useEffect(() => {
+    onSettledRef.current = onSettled;
+  }, [onSettled]);
 
   const dismiss = useCallback((uid: string) => {
     const timer = dismissTimersRef.current.get(uid);
@@ -75,11 +77,12 @@ export function useTransferTracker(onSettled?: () => void) {
   }, [jobs, scheduleAutoDismiss]);
 
   useEffect(() => {
+    const timers = dismissTimersRef.current;
     return () => {
-      for (const timer of dismissTimersRef.current.values()) {
+      for (const timer of timers.values()) {
         window.clearTimeout(timer);
       }
-      dismissTimersRef.current.clear();
+      timers.clear();
     };
   }, []);
 

@@ -150,7 +150,6 @@ export function AddStorageForm({
         <div className="flex items-start gap-3">
           <input
             className="mt-0.5 size-4 shrink-0 accent-primary"
-            defaultChecked
             id="import_existing"
             name="import_existing"
             type="checkbox"

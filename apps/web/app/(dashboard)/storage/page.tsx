@@ -123,8 +123,10 @@ function StorageBrowser() {
 
   const parentRef = useRef(currentParentRef);
   const queryRef = useRef(query);
-  parentRef.current = currentParentRef;
-  queryRef.current = query;
+  useEffect(() => {
+    parentRef.current = currentParentRef;
+    queryRef.current = query;
+  }, [currentParentRef, query]);
 
   const stopPollRef = useRef<(() => void) | null>(null);
 

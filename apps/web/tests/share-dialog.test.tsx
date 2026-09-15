@@ -143,7 +143,7 @@ describe("share dialog", () => {
     });
 
     const generated = await screen.findByDisplayValue(
-      /\/api\/v1\/s3\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
+      /\/api\/v1\/s3\/umedia\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
     );
     expect(generated).toBeInTheDocument();
 
@@ -151,7 +151,7 @@ describe("share dialog", () => {
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
         expect.stringMatching(
-          /\/api\/v1\/s3\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
+          /\/api\/v1\/s3\/umedia\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
         ),
       );
     });
@@ -160,7 +160,7 @@ describe("share dialog", () => {
     expect(openLink).toHaveAttribute(
       "href",
       expect.stringMatching(
-        /\/api\/v1\/s3\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
+        /\/api\/v1\/s3\/umedia\/file-2\/report\.pdf\?X-Amz-Algorithm=AWS4-HMAC-SHA256/,
       ),
     );
     expect(openLink).toHaveAttribute("target", "_blank");
