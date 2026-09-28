@@ -135,6 +135,32 @@ def _google_drive_fs(config: dict[str, Any]) -> str:
     return f":drive,{_params(params)}:"
 
 
+def _onedrive_fs(config: dict[str, Any]) -> str:
+    if not config.get("token"):
+        raise ConnectionFailedError("token is required")
+    if not config.get("drive_id"):
+        raise ConnectionFailedError("drive_id is required")
+    params: dict[str, str | None] = {
+        "token": config["token"],
+        "client_id": config.get("client_id"),
+        "client_secret": config.get("client_secret"),
+        "drive_id": config["drive_id"],
+        "drive_type": config.get("drive_type"),
+    }
+    return f":onedrive,{_params(params)}:"
+
+
+def _dropbox_fs(config: dict[str, Any]) -> str:
+    if not config.get("token"):
+        raise ConnectionFailedError("token is required")
+    params: dict[str, str | None] = {
+        "token": config["token"],
+        "client_id": config.get("client_id"),
+        "client_secret": config.get("client_secret"),
+    }
+    return f":dropbox,{_params(params)}:"
+
+
 def _local_debug_fs(config: dict[str, Any]) -> str:
     """rclone's own `local` backend -- not a cataloged provider (UMedia
     already has a native `local` plugin, Phase 3.1). Kept as a permanent,
@@ -149,12 +175,11 @@ def _local_debug_fs(config: dict[str, Any]) -> str:
     return f":local:{config['path']}"
 
 
-# One builder per supported remote_type. Adding a WebDAV/FTP/SFTP/Nextcloud/
-# OneDrive/Dropbox entry here (docs/09-tasks.md backlog) is a config-mapping
-# function, not new plumbing -- everything else in this file is generic.
 _FS_BUILDERS = {
     "s3": _s3_fs,
     "google_drive": _google_drive_fs,
+    "onedrive": _onedrive_fs,
+    "dropbox": _dropbox_fs,
     "rclone_local_debug": _local_debug_fs,
 }
 
@@ -200,7 +225,8 @@ class RcloneBackend(PluginBackend):
             self._rcd_process.terminate()
             try:
                 await asyncio.wait_for(
-                    self._rcd_process.wait(), timeout=RCD_STOP_TIMEOUT_SECONDS,
+                    self._rcd_process.wait(),
+                    timeout=RCD_STOP_TIMEOUT_SECONDS,
                 )
             except TimeoutError:
                 self._rcd_process.kill()
@@ -247,7 +273,9 @@ class RcloneBackend(PluginBackend):
         return data
 
     async def _run_subprocess(
-        self, *args: str, stdin_bytes: bytes | None = None,
+        self,
+        *args: str,
+        stdin_bytes: bytes | None = None,
     ) -> bytes:
         process = await asyncio.create_subprocess_exec(
             "rclone",
@@ -298,18 +326,23 @@ class RcloneBackend(PluginBackend):
         return StatusOut(healthy=True)
 
     async def list_resources(
-        self, config: dict[str, Any], *, parent_id: str | None,
+        self,
+        config: dict[str, Any],
+        *,
+        parent_id: str | None,
     ) -> list[Resource]:
         fs = _build_fs(config)
         result = await self._rc_call(
-            "/operations/list", {"fs": fs, "remote": parent_id or ""},
+            "/operations/list",
+            {"fs": fs, "remote": parent_id or ""},
         )
         return [self._to_resource(item) for item in result.get("list", [])]
 
     async def get_resource(self, config: dict[str, Any], resource_id: str) -> Resource:
         fs = _build_fs(config)
         result = await self._rc_call(
-            "/operations/stat", {"fs": fs, "remote": resource_id},
+            "/operations/stat",
+            {"fs": fs, "remote": resource_id},
         )
         item = result.get("item")
         if item is None:
@@ -333,7 +366,8 @@ class RcloneBackend(PluginBackend):
                 args += ["--count", str(count)]
         args.append(self._target(fs, resource_id))
         process = await asyncio.create_subprocess_exec(
-            "rclone", *args,
+            "rclone",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -360,7 +394,8 @@ class RcloneBackend(PluginBackend):
     ) -> Resource:
         fs = _build_fs(config)
         remote = (
-            f"{metadata.parent_id}/{metadata.name}" if metadata.parent_id
+            f"{metadata.parent_id}/{metadata.name}"
+            if metadata.parent_id
             else metadata.name
         )
         if metadata.type == "folder":
@@ -368,7 +403,9 @@ class RcloneBackend(PluginBackend):
         else:
             body = b"".join([chunk async for chunk in content])
             await self._run_subprocess(
-                "rcat", self._target(fs, remote), stdin_bytes=body,
+                "rcat",
+                self._target(fs, remote),
+                stdin_bytes=body,
             )
         return await self.get_resource(config, remote)
 
@@ -383,8 +420,7 @@ class RcloneBackend(PluginBackend):
         fs = _build_fs(config)
         current = await self.get_resource(config, resource_id)
         new_parent = (
-            changes.parent_id if changes.parent_id is not None
-            else current.parent_id
+            changes.parent_id if changes.parent_id is not None else current.parent_id
         )
         new_name = changes.name or current.name
         new_remote = f"{new_parent}/{new_name}" if new_parent else new_name
@@ -393,15 +429,19 @@ class RcloneBackend(PluginBackend):
             await self._rc_call(
                 "/operations/movefile",
                 {
-                    "srcFs": fs, "srcRemote": resource_id,
-                    "dstFs": fs, "dstRemote": new_remote,
+                    "srcFs": fs,
+                    "srcRemote": resource_id,
+                    "dstFs": fs,
+                    "dstRemote": new_remote,
                 },
             )
 
         if content is not None:
             body = b"".join([chunk async for chunk in content])
             await self._run_subprocess(
-                "rcat", self._target(fs, new_remote), stdin_bytes=body,
+                "rcat",
+                self._target(fs, new_remote),
+                stdin_bytes=body,
             )
 
         return await self.get_resource(config, new_remote)
@@ -410,7 +450,8 @@ class RcloneBackend(PluginBackend):
         fs = _build_fs(config)
         resource = await self.get_resource(config, resource_id)  # 404s if missing
         endpoint = (
-            "/operations/purge" if resource.type == "folder"
+            "/operations/purge"
+            if resource.type == "folder"
             else "/operations/deletefile"
         )
         await self._rc_call(endpoint, {"fs": fs, "remote": resource_id})

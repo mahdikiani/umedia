@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { AddStorageForm } from "@/components/add-storage-form";
+import { PublicLegalFooter } from "@/components/public-legal-footer";
 import { useLocale } from "@/components/locale-provider";
 import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -94,6 +95,7 @@ export default function OnboardingPage() {
             providerTypes={providerTypes}
           />
         </div>
+        <PublicLegalFooter />
       </div>
     </main>
   );

@@ -65,3 +65,13 @@ class MediaFileWriteFailedError(BaseHTTPException):
             detail=detail,
             message="Could not write to the storage provider",
         )
+
+
+class MediaFileDeleteFailedError(BaseHTTPException):
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            status_code=502,
+            error_code="media_file_delete_failed",
+            detail=detail,
+            message="Could not delete from the storage provider",
+        )

@@ -3,7 +3,14 @@
 import pytest
 
 from plugins.contracts import ConnectionFailedError
-from plugins.rclone.backend import _build_fs, _google_drive_fs, _quote, _s3_fs
+from plugins.rclone.backend import (
+    _build_fs,
+    _dropbox_fs,
+    _google_drive_fs,
+    _onedrive_fs,
+    _quote,
+    _s3_fs,
+)
 
 
 def test_quote_wraps_values_with_delimiter_characters() -> None:
@@ -100,6 +107,45 @@ def test_google_drive_fs_includes_client_id_and_secret_when_set() -> None:
 def test_google_drive_fs_requires_a_token() -> None:
     with pytest.raises(ConnectionFailedError):
         _google_drive_fs({})
+
+
+def test_onedrive_fs_uses_token_and_selected_drive() -> None:
+    fs = _onedrive_fs({
+        "token": '{"access_token":"a","refresh_token":"r"}',
+        "client_id": "app-id",
+        "client_secret": "app-secret",
+        "drive_id": "b!drive-id",
+        "drive_type": "business",
+    })
+    assert fs.startswith(":onedrive,")
+    assert "token='{" in fs
+    assert "drive_id=b!drive-id" in fs
+    assert "drive_type=business" in fs
+    assert "client_secret=app-secret" in fs
+
+
+def test_onedrive_fs_requires_token_and_drive_id() -> None:
+    with pytest.raises(ConnectionFailedError, match="token"):
+        _onedrive_fs({})
+    with pytest.raises(ConnectionFailedError, match="drive_id"):
+        _onedrive_fs({"token": "token-json"})
+
+
+def test_dropbox_fs_includes_oauth_token_and_app_credentials() -> None:
+    fs = _dropbox_fs({
+        "token": '{"access_token":"a","refresh_token":"r"}',
+        "client_id": "app-id",
+        "client_secret": "app-secret",
+    })
+    assert fs.startswith(":dropbox,")
+    assert "token='{" in fs
+    assert "client_id=app-id" in fs
+    assert "client_secret=app-secret" in fs
+
+
+def test_dropbox_fs_requires_token() -> None:
+    with pytest.raises(ConnectionFailedError, match="token"):
+        _dropbox_fs({})
 
 
 def test_build_fs_dispatches_on_remote_type() -> None:

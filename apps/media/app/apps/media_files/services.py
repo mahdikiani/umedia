@@ -21,9 +21,9 @@ The invariants this module owns:
   rows `missing` and soft-deletes their MediaFiles; they restore to the
   same uid if the remote object reappears. A failed/partial listing
   never marks missing.
-- **Deletes are library-first.** Soft-delete cascades through the folder
-  tree; even a permanent delete removes only the MediaFile row and its
-  links -- the StorageObject and the remote bytes stay (doc 11 v1 rule).
+- **Deletes are two-step.** Soft-delete cascades through the folder tree.
+  Permanent delete removes unshared provider objects before removing local
+  library rows; shared objects remain until their last link is removed.
 """
 
 import asyncio
@@ -31,7 +31,7 @@ import dataclasses
 import hashlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -39,12 +39,13 @@ from urllib.parse import urlparse
 from apps.s3.auth import generate_presigned_url
 from apps.s3.paths import file_keys
 from apps.storage_objects.schemas import StorageObjectRecord
-from plugins.contracts import CreateResourceIn, UpdateResourceIn
+from plugins.contracts import CreateResourceIn, ResourceNotFoundError, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
 from utils.pagination import Page
 
 from .content_type import index_content_type
 from .errors import (
+    MediaFileDeleteFailedError,
     MediaFileNotFoundError,
     MediaFilePermissionError,
     MediaFileStateError,
@@ -52,7 +53,12 @@ from .errors import (
     MediaFileWriteFailedError,
 )
 from .legacy_staging import is_legacy_staging_folder
-from .permissions import PermissionEnum, can_open_content, can_read, effective_permission
+from .permissions import (
+    PermissionEnum,
+    can_open_content,
+    can_read,
+    effective_permission,
+)
 from .placement import PlacementSettings, pick_connection
 from .provider_layout import (
     is_umedia_managed_reference,
@@ -167,6 +173,7 @@ class MediaFileRepositoryProtocol(Protocol):
     ) -> MediaFileRecord: ...
     async def touch_access(self, uid: str) -> None: ...
     async def soft_delete(self, uid: str) -> None: ...
+    async def soft_delete_many(self, uids: Sequence[str]) -> None: ...
     async def restore(self, uid: str) -> None: ...
     async def hard_delete(self, uid: str) -> None: ...
     async def list_expired_trash(
@@ -190,6 +197,10 @@ class MediaFileRepositoryProtocol(Protocol):
         self,
         storage_object_uid: str,
     ) -> MediaFileRecord | None: ...
+    async def list_uids_by_storage_object(
+        self,
+        storage_object_uid: str,
+    ) -> "list[str]": ...
     async def find_import_root(
         self,
         *,
@@ -224,6 +235,7 @@ class StorageObjectRepositoryProtocol(Protocol):
         filter_by_parent: bool = False,
         include_deleted: bool = False,
     ) -> list[StorageObjectRecord]: ...
+    async def soft_delete(self, uid: str) -> None: ...
 
 
 class PluginGatewayProtocol(Protocol):
@@ -1405,24 +1417,47 @@ class MediaFileService(MediaFileSearchMixin):
             if not have_mtimes or remote_mtime == previous_mtime:
                 return previous.content_hash
 
-        try:
-            return await _hash_stream(
-                self._plugins.read_content(
-                    provider_connection_id,
-                    resource.id,
-                    range_header=None,
-                ),
-            )
-        except Exception:
-            # A hash read timeout/failure must not abort the whole sync
-            # walk — otherwise nested folders never get indexed after a
-            # large root file (seen with S3/rclone on multi‑MB objects).
-            logging.exception(
-                "Content hash failed for %s on connection %s; continuing sync",
-                resource.id,
-                provider_connection_id,
-            )
-            return previous.content_hash if previous is not None else None
+        return None
+
+    async def hash_missing_content(
+        self,
+        provider_connection_id: str,
+        *,
+        batch_size: int = 100,
+    ) -> int:
+        """Hash indexed files in bounded pages without delaying provider sync."""
+        completed = 0
+        after_uid: str | None = None
+        while pending := await self._objects.list_missing_hashes(
+            provider_connection_id=provider_connection_id,
+            after_uid=after_uid,
+            limit=batch_size,
+        ):
+            after_uid = pending[-1].uid
+            for item in pending:
+                try:
+                    content_hash = await _hash_stream(
+                        self._plugins.read_content(
+                            provider_connection_id,
+                            item.content_reference,
+                            range_header=None,
+                        ),
+                    )
+                except Exception:
+                    logging.exception(
+                        "Content hash failed for %s on connection %s",
+                        item.content_reference,
+                        provider_connection_id,
+                    )
+                    continue
+                stored = await self._objects.set_content_hash_if_unchanged(
+                    uid=item.uid,
+                    expected_size=item.size,
+                    expected_metadata=item.metadata,
+                    content_hash=content_hash,
+                )
+                completed += int(stored)
+        return completed
 
     async def import_if_enabled(
         self,
@@ -1755,7 +1790,7 @@ class MediaFileService(MediaFileSearchMixin):
         provider_connection_id: str,
     ) -> int:
         """Trash every live MediaFile bound or synced to a connection
-        being removed. StorageObjects and remote bytes stay (doc 11).
+        being removed. Provider objects are not touched by this operation.
 
         No actor ACL -- this is a system cascade when the connection is
         deleted, same stance as `_mark_unseen_missing`. Soft-deletes
@@ -1780,8 +1815,15 @@ class MediaFileService(MediaFileSearchMixin):
             for record in by_uid.values()
             if record.parent_id not in candidate_ids
         ]
-        for root in roots:
-            await self._soft_delete_tree(root)
+        tree_uids = set(candidate_ids)
+        pending = list(roots)
+        while pending:
+            record = pending.pop()
+            tree_uids.add(record.uid)
+            if record.type == "folder":
+                pending.extend(await self._files.list(parent_id=record.uid))
+        if candidate_ids:
+            await self._files.soft_delete_many(sorted(tree_uids))
         return len(roots)
 
     async def soft_delete(self, uid: str, *, actor_user_id: str) -> None:
@@ -1815,9 +1857,6 @@ class MediaFileService(MediaFileSearchMixin):
         await self._files.restore(record.uid)
 
     async def hard_delete(self, uid: str, *, actor_user_id: str) -> None:
-        """Permanently remove the library entry (and its links). The
-        StorageObject rows and the provider's bytes deliberately survive
-        -- doc 11's v1 rule keeps remote deletion out of scope."""
         record = await self._get_visible(
             uid,
             actor_user_id=actor_user_id,
@@ -1833,17 +1872,85 @@ class MediaFileService(MediaFileSearchMixin):
             raise MediaFileStateError(
                 f"File '{uid}' must be deleted before permanent removal",
             )
-        await self._hard_delete_tree(record)
+        await self._hard_delete_tree(record, delete_provider=True)
 
-    async def _hard_delete_tree(self, record: MediaFileRecord) -> None:
+    async def _hard_delete_tree(
+        self,
+        record: MediaFileRecord,
+        *,
+        delete_provider: bool = False,
+    ) -> None:
+        records = [record]
         if record.type == "folder":
             children = await self._files.list(
                 parent_id=record.uid,
                 include_deleted=True,
             )
             for child in children:
-                await self._hard_delete_tree(child)
-        await self._files.hard_delete(record.uid)
+                records.extend(
+                    await self._collect_hard_delete_records(child),
+                )
+        if delete_provider:
+            await self._delete_provider_objects(records)
+        for item in reversed(records):
+            await self._files.hard_delete(item.uid)
+
+    async def _collect_hard_delete_records(
+        self,
+        record: MediaFileRecord,
+    ) -> list[MediaFileRecord]:
+        records = [record]
+        if record.type == "folder":
+            children = await self._files.list(
+                parent_id=record.uid,
+                include_deleted=True,
+            )
+            for child in children:
+                records.extend(await self._collect_hard_delete_records(child))
+        return records
+
+    async def _delete_provider_objects(
+        self,
+        records: list[MediaFileRecord],
+    ) -> None:
+        target_ids = {record.uid for record in records}
+        objects: dict[str, MediaFileRecord] = {}
+        for record in records:
+            if record.storage_object_uid is not None:
+                objects.setdefault(record.storage_object_uid, record)
+
+        for storage_object_uid, fallback in objects.items():
+            linked_ids = set(
+                await self._files.list_uids_by_storage_object(
+                    storage_object_uid,
+                ),
+            )
+            if linked_ids - target_ids:
+                continue
+            storage_object = await self._objects.get(storage_object_uid)
+            provider_connection_id = (
+                storage_object.provider_connection_id
+                if storage_object is not None
+                else fallback.provider_connection_id
+            )
+            content_reference = (
+                storage_object.content_reference
+                if storage_object is not None
+                else fallback.content_reference
+            )
+            if provider_connection_id is None or content_reference is None:
+                continue
+            try:
+                await self._plugins.delete_resource(
+                    provider_connection_id,
+                    content_reference,
+                )
+            except ResourceNotFoundError:
+                pass
+            except Exception as error:
+                raise MediaFileDeleteFailedError(str(error)) from error
+            if storage_object is not None:
+                await self._objects.soft_delete(storage_object_uid)
 
     async def purge_expired_trash(
         self,
@@ -1860,7 +1967,7 @@ class MediaFileService(MediaFileSearchMixin):
         The cutoff compares against the naive `datetime.now()` the
         repository's `soft_delete` stamps into `deleted_at`. As always
         (doc 11 v1), only library rows go -- StorageObjects and provider
-        bytes survive.
+        bytes survive because this system purge is library-only.
         """
         cutoff = datetime.now() - timedelta(days=older_than_days)
         roots = await self._files.list_expired_trash(cutoff=cutoff)

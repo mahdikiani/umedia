@@ -170,10 +170,7 @@ describe("TemporaryDock", () => {
             202,
           );
         }
-        if (
-          url.endsWith("/files/temporary") &&
-          init?.method === "DELETE"
-        ) {
+        if (url.endsWith("/files/temporary") && init?.method === "DELETE") {
           return jsonResponse(null, 204);
         }
         throw new Error(`Unexpected request: ${url}`);
@@ -189,7 +186,9 @@ describe("TemporaryDock", () => {
     );
 
     expect(await screen.findByText("clip.mp4")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Paste here \(move\)/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Paste here \(move\)/i }),
+    );
 
     await waitFor(() => {
       expect(onTransferCreated).toHaveBeenCalled();
@@ -210,6 +209,33 @@ describe("TemporaryDock", () => {
       "/api/v1/files/temporary",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("disables moving items back into their current folder", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        if (String(input).endsWith("/files/temporary")) {
+          return jsonResponse([stashedItem]);
+        }
+        throw new Error(`Unexpected request: ${String(input)}`);
+      }),
+    );
+    render(
+      <TemporaryDock
+        addToTemporary={vi.fn()}
+        currentParentId={null}
+        onTransferCreated={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("clip.mp4")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Paste here (move)" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Paste here (copy)" }),
+    ).toBeEnabled();
   });
 
   it("clears every Temporary pointer", async () => {

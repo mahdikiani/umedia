@@ -5,6 +5,7 @@ reconcile with `POST /providers/{uid}/sync`.
 
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 from typing import Any
 
@@ -399,6 +400,30 @@ _IDLE_SYNC = {
 }
 
 
+@pytest.mark.asyncio
+async def test_content_hash_backfill_is_deduplicated_per_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.media_files import worker
+
+    service = SimpleNamespace(hash_missing_content=AsyncMock(return_value=2))
+    monkeypatch.setattr(
+        worker,
+        "build_media_file_service_from_state",
+        lambda _state: service,
+    )
+    state = SimpleNamespace(hash_tasks={})
+
+    worker.schedule_content_hash_backfill(state, "connection-1")
+    task = state.hash_tasks["connection-1"]
+    worker.schedule_content_hash_backfill(state, "connection-1")
+
+    assert state.hash_tasks["connection-1"] is task
+    await task
+    service.hash_missing_content.assert_awaited_once_with("connection-1")
+    assert state.hash_tasks == {}
+
+
 async def _persist_connection(
     harness: Harness, **overrides: object,
 ) -> ProviderConnection:
@@ -452,7 +477,13 @@ async def test_poller_skips_disabled_and_already_running_connections(
     busy = await _persist_connection(harness, name="Busy")
 
     calls: list[str] = []
+    hash_calls: list[str] = []
     monkeypatch.setattr(worker, "run_inbound_sync", _recording_run(calls))
+    monkeypatch.setattr(
+        worker,
+        "schedule_content_hash_backfill",
+        lambda _state, uid: hash_calls.append(uid),
+    )
 
     state = SimpleNamespace(
         session_factory=harness.session_factory,
@@ -463,6 +494,7 @@ async def test_poller_skips_disabled_and_already_running_connections(
 
     assert counted == 1
     assert calls == [enabled.uid]
+    assert hash_calls == [enabled.uid]
     assert disabled.uid not in calls
     assert busy.uid not in calls
     assert busy.uid in state.active_syncs
@@ -551,7 +583,7 @@ async def test_poller_mutates_the_existing_empty_active_syncs_set(
     held: list[set[str]] = []
 
     async def _fake_run(state: object, connection_uid: str, _actor: str) -> dict:
-        snapshot = set(getattr(state, "active_syncs"))
+        snapshot = set(state.active_syncs)
         held.append(snapshot)
         if connection_uid not in snapshot:
             raise AssertionError(

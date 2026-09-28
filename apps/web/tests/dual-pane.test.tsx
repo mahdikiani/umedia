@@ -58,6 +58,16 @@ const folder = {
   updated_at: "2026-08-11T00:00:00Z",
 };
 
+const longName = "A-very-long-recording-name-that-needs-to-fit-in-a-column.mp4";
+const longNamedFile = {
+  ...folder,
+  uid: "file-long-name",
+  type: "file",
+  name: longName,
+  content_type: "video/mp4",
+  size: 1024,
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
@@ -102,7 +112,9 @@ describe("dual pane", () => {
         if (url.endsWith("/providers")) return jsonResponse(connections);
         if (url.includes("/files/temporary")) return jsonResponse([]);
         if (url.includes("/files/transfers")) return jsonResponse([]);
-        if (url.includes("/files?")) return jsonResponse(pageOf([folder]));
+        if (url.includes("/files?")) {
+          return jsonResponse(pageOf([folder, longNamedFile]));
+        }
         if (url.match(/\/files\/[^/?]+$/)) {
           const uid = url.split("/").pop();
           if (uid === "folder-1") return jsonResponse(folder);
@@ -129,6 +141,25 @@ describe("dual pane", () => {
       expect(screen.getByTestId("file-pane-secondary")).toBeInTheDocument();
     });
     expect(localStorage.getItem("umedia.files.dualPane")).toBe("1");
+  });
+
+  it("keeps table columns inside each pane and exposes full long file names on hover", async () => {
+    localStorage.setItem("umedia.files.dualPane", "1");
+    render(<FilesPage />);
+
+    const tables = await screen.findAllByRole("table");
+    expect(tables).toHaveLength(2);
+    for (const table of tables) {
+      expect(table).toHaveClass("table-fixed");
+      expect(table.parentElement).toHaveClass("overflow-x-hidden");
+    }
+
+    const names = await screen.findAllByText(longName);
+    expect(names).toHaveLength(2);
+    for (const name of names) {
+      expect(name).toHaveClass("truncate");
+      expect(name).toHaveAttribute("title", longName);
+    }
   });
 
   it("resets a missing secondary folder to root so the right pane is not blank", async () => {

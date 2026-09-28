@@ -1,6 +1,8 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS fast-uv
+FROM python:3.13-slim AS fast-uv
 
 WORKDIR /app
+
+RUN pip install --no-cache-dir uv==0.7.10
 
 COPY pyproject.toml pyproject.toml
 

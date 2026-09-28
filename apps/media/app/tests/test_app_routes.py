@@ -45,7 +45,18 @@ async def test_bootstrap_login_and_browse_providers(
     types_response = await client.get("/provider-types")
     assert types_response.status_code == 200
     provider_ids = {item["id"] for item in types_response.json()}
-    assert {"local", "s3", "telegram", "google_drive"} <= provider_ids
+    assert {
+        "local",
+        "s3",
+        "telegram",
+        "google_drive",
+        "onedrive",
+        "dropbox",
+    } <= provider_ids
+    oauth_types = {item["id"]: item["connect_flow"] for item in types_response.json()}
+    assert oauth_types["google_drive"] == "oauth"
+    assert oauth_types["onedrive"] == "oauth"
+    assert oauth_types["dropbox"] == "oauth"
 
     connections_response = await client.get("/providers")
     assert connections_response.status_code == 200

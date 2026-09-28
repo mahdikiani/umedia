@@ -58,7 +58,7 @@ async def harness(tmp_path: Path) -> Harness:
 
 
 @pytest.mark.asyncio
-async def test_import_hashes_each_file_but_not_folders(harness: Harness) -> None:
+async def test_import_indexes_files_without_reading_content(harness: Harness) -> None:
     harness.plugins.listings[CONNECTION_ID] = _tree_listing()
     harness.plugins.store["a.txt"] = b"abc"
 
@@ -70,6 +70,26 @@ async def test_import_hashes_each_file_but_not_folders(harness: Harness) -> None
     objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
     by_reference = {obj.content_reference: obj for obj in objects}
     assert by_reference["docs"].content_hash is None
+    assert by_reference["a.txt"].content_hash is None
+    assert by_reference["docs/b.txt"].content_hash is None
+    assert harness.plugins.plugin_calls("read") == []
+
+
+@pytest.mark.asyncio
+async def test_hash_backfill_hashes_indexed_files_in_background(
+    harness: Harness,
+) -> None:
+    harness.plugins.listings[CONNECTION_ID] = _tree_listing()
+    harness.plugins.store["a.txt"] = b"abc"
+
+    await harness.service.import_from_provider(
+        CONNECTION_ID,
+        actor_user_id=ACTOR_ID,
+    )
+    await harness.service.hash_missing_content(CONNECTION_ID)
+
+    objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
+    by_reference = {obj.content_reference: obj for obj in objects}
     assert by_reference["a.txt"].content_hash == hashlib.sha256(b"abc").hexdigest()
     assert by_reference["docs/b.txt"].content_hash == hashlib.sha256(
         b"x" * 7,
@@ -86,17 +106,16 @@ async def test_unchanged_second_sync_reuses_hash_without_reading(
         CONNECTION_ID,
         actor_user_id=ACTOR_ID,
     )
+    await harness.service.hash_missing_content(CONNECTION_ID)
     reads_after_import = list(harness.plugins.plugin_calls("read"))
 
     await harness.service.import_from_provider(
         CONNECTION_ID,
         actor_user_id=ACTOR_ID,
     )
+    await harness.service.hash_missing_content(CONNECTION_ID)
 
-    assert reads_after_import == [
-        ("read", CONNECTION_ID, "a.txt"),
-        ("read", CONNECTION_ID, "docs/b.txt"),
-    ]
+    assert {call[2] for call in reads_after_import} == {"a.txt", "docs/b.txt"}
     assert harness.plugins.plugin_calls("read") == reads_after_import
 
 
@@ -120,6 +139,11 @@ async def test_changed_remote_file_recomputes_hash(
         CONNECTION_ID,
         actor_user_id=ACTOR_ID,
     )
+    assert (await harness.objects.get_by_reference(
+        provider_connection_id=CONNECTION_ID,
+        content_reference="a.txt",
+    )).content_hash is None
+    await harness.service.hash_missing_content(CONNECTION_ID)
 
     harness.plugins.listings[CONNECTION_ID] = _file_listing(
         size=second_size,
@@ -130,6 +154,7 @@ async def test_changed_remote_file_recomputes_hash(
         CONNECTION_ID,
         actor_user_id=ACTOR_ID,
     )
+    await harness.service.hash_missing_content(CONNECTION_ID)
 
     obj = await harness.objects.get_by_reference(
         provider_connection_id=CONNECTION_ID,

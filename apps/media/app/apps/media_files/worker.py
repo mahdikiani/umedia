@@ -19,6 +19,7 @@ lookup are stubbed with loud placeholders because a purge reaching for
 either would be a bug, not a missing dependency.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -26,11 +27,46 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.provider_connections.repository import ProviderConnectionRepository
 
-from .factory import run_inbound_sync
+from .factory import build_media_file_service_from_state, run_inbound_sync
 from .repository import MediaFileRepository
 from .services import TRASH_RETENTION_DAYS, MediaFileService
 
 logger = logging.getLogger(__name__)
+
+
+def schedule_content_hash_backfill(
+    app_or_state: Any,  # noqa: ANN401
+    connection_uid: str,
+) -> None:
+    """Start one retained hash job per provider connection."""
+    state = _state(app_or_state)
+    hash_tasks = getattr(state, "hash_tasks", None)
+    if hash_tasks is None:
+        hash_tasks = {}
+        state.hash_tasks = hash_tasks
+    current = hash_tasks.get(connection_uid)
+    if current is not None and not current.done():
+        return
+
+    async def _run() -> None:
+        try:
+            service = build_media_file_service_from_state(state)
+            count = await service.hash_missing_content(connection_uid)
+            logger.info(
+                "Content hash backfill for '%s' finished: %d object(s)",
+                connection_uid,
+                count,
+            )
+        except Exception:
+            logger.exception(
+                "Content hash backfill for '%s' failed",
+                connection_uid,
+            )
+        finally:
+            hash_tasks.pop(connection_uid, None)
+
+    task = asyncio.create_task(_run())
+    hash_tasks[connection_uid] = task
 
 
 class _Unused:
@@ -121,6 +157,7 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
                 )
                 continue
             result = await run_inbound_sync(state, connection.uid, actor_id)
+            schedule_content_hash_backfill(state, connection.uid)
             logger.info(
                 "Inbound poll sync for '%s' finished: %s",
                 connection.uid,

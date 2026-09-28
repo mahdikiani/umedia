@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import Script from "next/script";
 import "@fontsource-variable/vazirmatn";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -24,6 +25,23 @@ export default function RootLayout({
       className={cn("font-sans", geist.variable)}
       suppressHydrationWarning
     >
+      <head>
+        {process.env.NODE_ENV === "development" && (
+          <Script
+            src="https://unpkg.com/react-scan/dist/auto.global.js"
+            crossOrigin="anonymous"
+            strategy="beforeInteractive"
+          />
+        )}
+
+        {process.env.NODE_ENV === "development" && (
+          <Script
+            src="//unpkg.com/react-grab/dist/index.global.js"
+            crossOrigin="anonymous"
+            strategy="beforeInteractive"
+          />
+        )}
+      </head>
       <body>
         <Providers>{children}</Providers>
       </body>

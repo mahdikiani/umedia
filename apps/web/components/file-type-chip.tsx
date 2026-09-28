@@ -10,9 +10,15 @@ type FileTypeChipProps = {
   item: FileTypeSource;
   active?: boolean;
   onToggle?: (key: string) => void;
+  className?: string;
 };
 
-export function FileTypeChip({ item, active = false, onToggle }: FileTypeChipProps) {
+export function FileTypeChip({
+  item,
+  active = false,
+  onToggle,
+  className,
+}: FileTypeChipProps) {
   const label = mimeChipLabel(item);
   const key = typeFilterKey(item);
   const title = item.type === "folder" ? "Folder" : resolvedMime(item);
@@ -20,7 +26,11 @@ export function FileTypeChip({ item, active = false, onToggle }: FileTypeChipPro
   return (
     <Badge
       aria-pressed={onToggle ? active : undefined}
-      className={cn(onToggle ? "cursor-pointer" : "pointer-events-none")}
+      className={cn(
+        "min-w-0 max-w-full shrink",
+        onToggle ? "cursor-pointer" : "pointer-events-none",
+        className,
+      )}
       onClick={
         onToggle
           ? (event) => {
@@ -35,7 +45,7 @@ export function FileTypeChip({ item, active = false, onToggle }: FileTypeChipPro
       variant={active ? "default" : "secondary"}
     >
       <FileTypeIcon className="size-3.5" item={item} />
-      {label}
+      <span className="min-w-0 truncate">{label}</span>
     </Badge>
   );
 }

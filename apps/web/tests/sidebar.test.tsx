@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppSidebar } from "@/components/app-sidebar";
@@ -10,9 +10,11 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 const mockRouter = { replace: vi.fn(), push: vi.fn() };
 const mockSearchParams = new URLSearchParams();
 
+let mockPathname = "/home";
+
 vi.mock("next/navigation", () => ({
   useRouter: () => mockRouter,
-  usePathname: () => "/home",
+  usePathname: () => mockPathname,
   useSearchParams: () => mockSearchParams,
 }));
 
@@ -38,6 +40,8 @@ describe("app sidebar", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
+    mockPathname = "/home";
+    window.localStorage.removeItem("umedia_locale");
     mockSearchParams.forEach((_, key) => mockSearchParams.delete(key));
     Object.defineProperty(window, "matchMedia", {
       writable: true,
@@ -65,7 +69,30 @@ describe("app sidebar", () => {
     );
   });
 
-  it("lists Home, Files, Storages, Starred, Trash, then Storage settings, Account, Log out", async () => {
+  it("links to the legal pages from the signed-in navigation", async () => {
+    renderSidebar();
+
+    expect(
+      await screen.findByRole("link", { name: "Privacy Policy" }),
+    ).toHaveAttribute("href", "/privacy-policy");
+    expect(
+      screen.getByRole("link", { name: "Terms and Conditions" }),
+    ).toHaveAttribute("href", "/terms-and-conditions");
+  });
+
+  it("shows Persian legal link labels when Persian is selected", async () => {
+    window.localStorage.setItem("umedia_locale", "fa");
+    renderSidebar();
+
+    expect(
+      await screen.findByRole("link", { name: "سیاست حفظ حریم خصوصی" }),
+    ).toHaveAttribute("href", "/privacy-policy");
+    expect(
+      screen.getByRole("link", { name: "شرایط و ضوابط" }),
+    ).toHaveAttribute("href", "/terms-and-conditions");
+  });
+
+  it("lists Home, Files, Starred, Trash, then Storage settings, Account, Log out", async () => {
     renderSidebar();
 
     expect(await screen.findByRole("link", { name: /Home/ })).toHaveAttribute(
@@ -73,7 +100,7 @@ describe("app sidebar", () => {
       "/home",
     );
     expect(screen.getByRole("link", { name: "Files" })).toHaveAttribute("href", "/files");
-    expect(screen.getByRole("button", { name: "Storages" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Storages" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Starred" })).toHaveAttribute(
       "href",
       "/starred",
@@ -89,34 +116,50 @@ describe("app sidebar", () => {
     );
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
 
-    const storages = screen.getByRole("button", { name: "Storages" });
     const starred = screen.getByRole("link", { name: "Starred" });
     const account = screen.getByRole("link", { name: "Account" });
-    expect(storages.compareDocumentPosition(starred) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(starred.compareDocumentPosition(account) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("expands Storages to list each provider connection", async () => {
+  it("shows the folder tree under Files and lazily expands folders", async () => {
+    const rootFolder = {
+      uid: "folder-a", owner_id: "owner", type: "folder", name: "Movies",
+      parent_id: null, metadata: {}, content_type: "inode/directory", size: 0,
+      status: "completed", error: null, public_permission: "none", starred: false,
+      permissions: [], workspace_id: null, access_at: "", created_at: "", updated_at: "",
+    };
+    const nestedFolder = { ...rootFolder, uid: "folder-b", name: "Sci-Fi", parent_id: "folder-a" };
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/files/folder-b")) return jsonResponse(nestedFolder);
+      if (url.endsWith("/files/folder-a")) return jsonResponse(rootFolder);
+      if (url.endsWith("/files?sort=name&order=asc&limit=50&offset=0")) {
+        return jsonResponse({ items: [rootFolder], total: 1, limit: 50, offset: 0, has_more: false });
+      }
+      if (url.includes("/files?sort=name&order=asc&limit=50&offset=0&parent_id=folder-a")) {
+        return jsonResponse({ items: [nestedFolder], total: 1, limit: 50, offset: 0, has_more: false });
+      }
+      return jsonResponse({ items: [], total: 0, limit: 50, offset: 0, has_more: false });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    mockPathname = "/files";
+    mockSearchParams.set("folder", "folder-b");
+
     renderSidebar();
 
-    expect(await screen.findByRole("link", { name: "MinIO" })).toHaveAttribute(
-      "href",
-      "/storage?provider=prov-a",
+    const folderLink = await screen.findByRole("link", { name: "Movies" });
+    expect(folderLink).toHaveAttribute("href", "/files?folder=folder-a");
+    const nestedLink = await screen.findByRole("link", { name: "Sci-Fi" });
+    expect(nestedLink).toHaveAttribute(
+      "href", "/files?folder=folder-b",
     );
-    expect(screen.getByRole("link", { name: "Google Drive" })).toHaveAttribute(
-      "href",
-      "/storage?provider=prov-b",
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Movies" }));
+    expect(screen.queryByRole("link", { name: "Sci-Fi" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expand Movies" }));
+    expect(screen.getByRole("link", { name: "Sci-Fi" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Storages" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/files/folder-b", expect.objectContaining({ credentials: "include" }),
     );
-    expect(
-      screen.getByRole("link", { name: "MinIO" }).querySelector(
-        "[data-provider-type='s3']",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Google Drive" }).querySelector(
-        "[data-provider-type='google_drive']",
-      ),
-    ).toBeInTheDocument();
   });
 
   it("shows a used-space card", async () => {

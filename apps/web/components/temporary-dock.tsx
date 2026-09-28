@@ -80,6 +80,14 @@ export function TemporaryDock({
 
   async function pasteHere(operation: "move" | "copy") {
     if (items.length === 0 || busy) return;
+    if (
+      operation === "move" &&
+      items.some(
+        (item) =>
+          item.parent_id === currentParentId || item.uid === currentParentId,
+      )
+    )
+      return;
     setBusy(true);
     try {
       const job = await createTransfer({
@@ -97,7 +105,9 @@ export function TemporaryDock({
       }
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Could not paste from Temporary.",
+        error instanceof Error
+          ? error.message
+          : "Could not paste from Temporary.",
       );
     } finally {
       setBusy(false);
@@ -159,6 +169,10 @@ export function TemporaryDock({
 
   const pasteTitle =
     "Paste into the folder you're browsing (left/primary panel)";
+  const moveHasSameDestination = items.some(
+    (item) =>
+      item.parent_id === currentParentId || item.uid === currentParentId,
+  );
 
   return (
     <aside
@@ -229,7 +243,7 @@ export function TemporaryDock({
                   Clear
                 </Button>
                 <Button
-                  disabled={busy}
+                  disabled={busy || moveHasSameDestination}
                   onClick={() => void pasteHere("move")}
                   size="sm"
                   title={pasteTitle}

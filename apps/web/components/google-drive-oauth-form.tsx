@@ -13,9 +13,7 @@ import {
   type ProviderType,
 } from "@/lib/api";
 
-/** Google Drive (and future oauth providers): show authorize URL, paste
- * whatever Google redirected to, complete via `/providers/oauth/complete`. */
-export function GoogleDriveOauthForm({
+export function OAuthProviderForm({
   provider,
   onCreated,
   onCancel,
@@ -48,7 +46,7 @@ export function GoogleDriveOauthForm({
           setError(
             requestError instanceof ApiError
               ? requestError.message
-              : "Could not start Google authorization.",
+              : `Could not start ${provider.name} authorization.`,
           );
         }
       } finally {
@@ -58,7 +56,7 @@ export function GoogleDriveOauthForm({
     return () => {
       cancelled = true;
     };
-  }, [provider.id]);
+  }, [provider.id, provider.name]);
 
   async function complete(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -85,7 +83,7 @@ export function GoogleDriveOauthForm({
       setError(
         requestError instanceof ApiError
           ? requestError.message
-          : "Could not complete Google authorization.",
+          : `Could not complete ${provider.name} authorization.`,
       );
     } finally {
       setSaving(false);
@@ -153,9 +151,9 @@ export function GoogleDriveOauthForm({
 
       <div className="space-y-3 rounded-xl border p-4">
         <div className="space-y-1">
-          <p className="text-sm font-medium">Authorize with Google</p>
+          <p className="text-sm font-medium">Authorize with {provider.name}</p>
           <p className="text-xs leading-5 text-muted-foreground">
-            Open the URL below, sign in, then paste whatever Google redirects to
+            Open the URL below, sign in, then paste whatever the provider redirects to
             (full URL, query string, code, or token JSON).
           </p>
         </div>
@@ -169,7 +167,7 @@ export function GoogleDriveOauthForm({
             </div>
             <div className="flex flex-wrap gap-2">
               <Button onClick={openAuthorize} type="button" variant="secondary">
-                Open Google login
+                Open {provider.name} login
               </Button>
               <Button onClick={() => void copyAuthorizeUrl()} type="button" variant="outline">
                 Copy URL
@@ -227,14 +225,14 @@ export function GoogleDriveOauthForm({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex justify-end gap-3 border-t pt-4">
+      <div className="sticky bottom-0 z-10 flex justify-end gap-3 border-t bg-popover pt-4">
         {onCancel && (
           <Button onClick={onCancel} type="button" variant="outline">
             Cancel
           </Button>
         )}
         <Button disabled={saving || starting || !oauth || !callback.trim()} type="submit">
-          {saving ? "Connecting…" : "Connect Google Drive"}
+          {saving ? "Connecting…" : `Connect ${provider.name}`}
         </Button>
       </div>
     </form>

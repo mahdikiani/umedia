@@ -105,6 +105,30 @@ class Settings(config.Settings):
             "http://localhost",
         ),
     )
+    onedrive_oauth_client_id: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_ONEDRIVE_OAUTH_CLIENT_ID", ""),
+    )
+    onedrive_oauth_client_secret: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_ONEDRIVE_OAUTH_CLIENT_SECRET", ""),
+    )
+    onedrive_oauth_redirect_uri: str = dataclasses.field(
+        default_factory=lambda: os.getenv(
+            "UMEDIA_ONEDRIVE_OAUTH_REDIRECT_URI",
+            "http://localhost",
+        ),
+    )
+    dropbox_oauth_client_id: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_DROPBOX_OAUTH_CLIENT_ID", ""),
+    )
+    dropbox_oauth_client_secret: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET", ""),
+    )
+    dropbox_oauth_redirect_uri: str = dataclasses.field(
+        default_factory=lambda: os.getenv(
+            "UMEDIA_DROPBOX_OAUTH_REDIRECT_URI",
+            "http://localhost",
+        ),
+    )
     # Identity login callback (separate from Drive storage OAuth paste flow).
     google_oidc_redirect_uri: str = dataclasses.field(
         default_factory=lambda: os.getenv("UMEDIA_OIDC_REDIRECT_URI", ""),

@@ -620,11 +620,6 @@ async def test_move_rejects_a_folder_on_a_different_storage(
         await harness.engine.dispose()
 
 
-# ----------------------------------------------------------------------
-# Delete lifecycle: soft-delete MediaFile only; StorageObject stays
-# ----------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_soft_delete_cascades_and_leaves_the_storage_object(
     harness: Harness,
@@ -655,7 +650,7 @@ async def test_soft_delete_cascades_and_leaves_the_storage_object(
 
 
 @pytest.mark.asyncio
-async def test_hard_delete_removes_the_row_but_never_the_remote(
+async def test_hard_delete_removes_the_row_and_remote_object(
     harness: Harness,
 ) -> None:
     created = await harness.service.upload(
@@ -670,6 +665,67 @@ async def test_hard_delete_removes_the_row_but_never_the_remote(
     await harness.service.hard_delete(created.uid, actor_user_id=OWNER_ID)
 
     assert await harness.files.get(created.uid) is None
-    # v1 keeps the StorageObject and the provider bytes (doc 11).
     assert await harness.objects.get(created.storage_object_uid) is not None
+    assert created.content_reference not in harness.plugins.store
+    assert harness.plugins.plugin_calls("delete") == [
+        ("delete", CONNECTION_ID, created.content_reference),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_keeps_library_when_provider_delete_fails(
+    harness: Harness,
+) -> None:
+    from apps.media_files.errors import MediaFileDeleteFailedError
+
+    created = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="provider-failure.txt",
+        content=b"x",
+        owner_id=OWNER_ID,
+    )
+    await harness.service.soft_delete(created.uid, actor_user_id=OWNER_ID)
+    harness.plugins.fail_delete = True
+
+    with pytest.raises(MediaFileDeleteFailedError):
+        await harness.service.hard_delete(created.uid, actor_user_id=OWNER_ID)
+
+    assert await harness.files.get(created.uid) is not None
+    assert created.content_reference in harness.plugins.store
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_preserves_provider_object_shared_by_another_file(
+    harness: Harness,
+) -> None:
+    created = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="shared-source.txt",
+        content=b"shared",
+        owner_id=OWNER_ID,
+    )
+    copy = await harness.files.create({
+        "owner_id": OWNER_ID,
+        "type": "file",
+        "name": "shared-copy.txt",
+        "parent_id": None,
+        "provider_connection_id": CONNECTION_ID,
+        "metadata": {},
+        "status": "completed",
+        "error": None,
+        "public_permission": "none",
+        "permissions": [],
+        "workspace_id": None,
+    })
+    await harness.files.link_object(
+        media_file_uid=copy.uid,
+        storage_object_uid=created.storage_object_uid,
+    )
+    await harness.service.soft_delete(created.uid, actor_user_id=OWNER_ID)
+
+    await harness.service.hard_delete(created.uid, actor_user_id=OWNER_ID)
+
+    assert created.content_reference in harness.plugins.store
     assert harness.plugins.plugin_calls("delete") == []

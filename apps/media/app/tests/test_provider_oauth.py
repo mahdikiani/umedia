@@ -10,14 +10,15 @@ import httpx
 import pytest
 
 from apps.provider_connections.oauth import (
+    GoogleOAuthCredentials,
     OAuthCallbackError,
     OAuthConfigurationError,
     OAuthExchangeError,
     OAuthStateStore,
-    GoogleOAuthCredentials,
     build_auth_url,
     exchange_code,
     parse_callback,
+    resolve_onedrive_drive,
     serialize_rclone_token,
 )
 from apps.provider_connections.oauth_service import (
@@ -26,7 +27,6 @@ from apps.provider_connections.oauth_service import (
 )
 from apps.provider_connections.services import ProviderConnectionService
 from plugins.manifest import ConfigField, PluginManifest
-
 
 CREDS = GoogleOAuthCredentials(
     client_id="client-id",
@@ -107,6 +107,30 @@ def test_build_auth_url_requires_credentials() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("provider_type", "host", "scope"),
+    [
+        ("onedrive", "login.microsoftonline.com", "offline_access"),
+        ("dropbox", "www.dropbox.com", "token_access_type=offline"),
+    ],
+)
+def test_build_auth_url_supports_microsoft_and_dropbox(
+    provider_type: str,
+    host: str,
+    scope: str,
+) -> None:
+    credentials = GoogleOAuthCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        provider_type=provider_type,
+    )
+    url = build_auth_url(credentials, state="csrf-state")
+    assert host in url
+    assert scope in url
+    assert "state=csrf-state" in url
+    assert "redirect_uri=http%3A%2F%2Flocalhost" in url
+
+
 def test_serialize_rclone_token_computes_expiry_from_expires_in() -> None:
     now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
     blob = serialize_rclone_token(
@@ -175,6 +199,21 @@ async def test_exchange_code_raises_on_error_response() -> None:
             await exchange_code(CREDS, code="bad", client=client)
 
 
+@pytest.mark.asyncio
+async def test_resolve_onedrive_drive_uses_graph_me_drive() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://graph.microsoft.com/v1.0/me/drive"
+        assert request.headers["Authorization"] == "Bearer graph-token"
+        return httpx.Response(
+            200,
+            json={"id": "b!drive", "driveType": "business"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        drive = await resolve_onedrive_drive("graph-token", client=client)
+    assert drive == {"id": "b!drive", "driveType": "business"}
+
+
 def _drive_manifest() -> PluginManifest:
     return PluginManifest(
         id="google_drive",
@@ -186,10 +225,16 @@ def _drive_manifest() -> PluginManifest:
         connect_flow="oauth",
         config_fields=(
             ConfigField(
-                key="token", label="OAuth token", required=False, secret=True,
+                key="token",
+                label="OAuth token",
+                required=False,
+                secret=True,
             ),
             ConfigField(
-                key="client_id", label="Client ID", required=False, secret=True,
+                key="client_id",
+                label="Client ID",
+                required=False,
+                secret=True,
             ),
             ConfigField(
                 key="client_secret",
@@ -198,7 +243,9 @@ def _drive_manifest() -> PluginManifest:
                 secret=True,
             ),
             ConfigField(
-                key="root_folder_id", label="Root folder ID", required=False,
+                key="root_folder_id",
+                label="Root folder ID",
+                required=False,
             ),
         ),
         capabilities=("list", "read", "write", "delete", "move", "copy"),
@@ -226,7 +273,11 @@ class _FakeRepo:
         return None
 
     async def update(
-        self, uid: str, changes: dict, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        changes: dict,
+        *,
+        owner_id: str | None = None,
     ) -> None:
         return None
 
@@ -238,8 +289,51 @@ class _FakeCipher:
 
 class _FakeRegistry:
     def get(self, provider_type: str) -> PluginManifest | None:
-        if provider_type == "google_drive":
-            return _drive_manifest()
+        if provider_type in {"google_drive", "onedrive", "dropbox"}:
+            return PluginManifest(
+                id=provider_type,
+                name=provider_type,
+                description=provider_type,
+                entrypoint=["python", "-m", "plugins.rclone.main"],
+                process_id="rclone",
+                remote_type=provider_type,
+                connect_flow="oauth",
+                config_fields=(
+                    ConfigField(
+                        key="token",
+                        label="OAuth token",
+                        required=False,
+                        secret=True,
+                    ),
+                    ConfigField(
+                        key="client_id",
+                        label="Client ID",
+                        required=False,
+                        secret=True,
+                    ),
+                    ConfigField(
+                        key="client_secret",
+                        label="Client secret",
+                        required=False,
+                        secret=True,
+                    ),
+                    ConfigField(
+                        key="drive_id",
+                        label="Drive ID",
+                        required=False,
+                    ),
+                    ConfigField(
+                        key="drive_type",
+                        label="Drive type",
+                        required=False,
+                    ),
+                    ConfigField(
+                        key="root_folder_id",
+                        label="Root folder ID",
+                        required=False,
+                    ),
+                ),
+            )
         return None
 
 
@@ -288,6 +382,76 @@ def test_oauth_start_returns_url_and_stores_state() -> None:
     assert started["redirect_uri"] == "http://localhost"
     assert "accounts.google.com" in started["authorization_url"]
     assert store.consume(started["state"], provider_type="google_drive")
+
+
+@pytest.mark.parametrize("provider_type", ["onedrive", "dropbox"])
+def test_oauth_service_start_uses_provider_credentials(provider_type: str) -> None:
+    service, _, _ = _oauth_service()
+    service._provider_credentials[provider_type] = GoogleOAuthCredentials(
+        client_id=f"{provider_type}-id",
+        client_secret=f"{provider_type}-secret",
+        provider_type=provider_type,
+    )
+    started = service.start(provider_type=provider_type)
+    assert started["provider_type"] == provider_type
+    assert started["authorization_url"]
+    assert started["redirect_uri"] == "http://localhost"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", ["onedrive", "dropbox"])
+async def test_oauth_complete_creates_cloud_connection(
+    provider_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, store, repo = _oauth_service()
+    service._provider_credentials[provider_type] = GoogleOAuthCredentials(
+        client_id=f"{provider_type}-id",
+        client_secret=f"{provider_type}-secret",
+        provider_type=provider_type,
+    )
+    state = store.create(provider_type)
+
+    async def fake_exchange(
+        credentials: GoogleOAuthCredentials,
+        *,
+        code: str,
+        client: httpx.AsyncClient | None = None,
+    ) -> dict:
+        assert credentials.provider_type == provider_type
+        assert code == "provider-code"
+        return {
+            "access_token": "provider-access",
+            "refresh_token": "provider-refresh",
+            "expires_in": 3600,
+        }
+
+    async def fake_drive(_token: str) -> dict[str, str]:
+        return {"id": "drive-123", "driveType": "business"}
+
+    monkeypatch.setattr(
+        "apps.provider_connections.oauth_service.exchange_code",
+        fake_exchange,
+    )
+    monkeypatch.setattr(
+        "apps.provider_connections.oauth_service.resolve_onedrive_drive",
+        fake_drive,
+    )
+    await service.complete(
+        provider_type=provider_type,
+        name=f"{provider_type} storage",
+        callback=f"code=provider-code&state={state}",
+        state=state,
+        owner_id="user-1",
+    )
+
+    assert repo.created is not None
+    config = json.loads(repo.created["encrypted_config"][4:])
+    assert config["client_id"] == f"{provider_type}-id"
+    assert json.loads(config["token"])["refresh_token"] == "provider-refresh"
+    if provider_type == "onedrive":
+        assert config["drive_id"] == "drive-123"
+        assert config["drive_type"] == "business"
 
 
 @pytest.mark.asyncio
@@ -396,6 +560,31 @@ def _configure_oauth(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cloud_oauth_start_routes_use_environment_credentials(
+    client: httpx.AsyncClient,
+) -> None:
+    await _authenticated(client)
+    settings = client._transport.app.state.settings  # type: ignore[attr-defined]
+    settings.onedrive_oauth_client_id = "onedrive-id"
+    settings.onedrive_oauth_client_secret = "onedrive-secret"
+    settings.dropbox_oauth_client_id = "dropbox-id"
+    settings.dropbox_oauth_client_secret = "dropbox-secret"
+
+    for provider_type, host in (
+        ("onedrive", "login.microsoftonline.com"),
+        ("dropbox", "www.dropbox.com"),
+    ):
+        response = await client.post(
+            "/providers/oauth/start",
+            json={"provider_type": provider_type},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert host in body["authorization_url"]
+        assert body["state"]
+
+
+@pytest.mark.asyncio
 async def test_oauth_start_route_requires_config(
     client: httpx.AsyncClient,
 ) -> None:
@@ -437,7 +626,7 @@ async def test_oauth_start_and_complete_routes(
 
     def patched_service(request: object) -> ProviderConnectionService:
         service = original_service(request)
-        service._connect = fake_connect  # noqa: SLF001
+        service._connect = fake_connect
         return service
 
     monkeypatch.setattr(routes_mod, "_service", patched_service)

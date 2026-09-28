@@ -587,8 +587,7 @@ async def delete_file(
     permanent: Annotated[bool, Query()] = False,
 ) -> Response:
     """Two-step delete: soft by default; `?permanent=true` removes the
-    library row (requires it to already be soft-deleted). Neither touches
-    the StorageObject or the provider's bytes -- doc 11's v1 rule."""
+    soft-deleted library row and its unshared provider object."""
     service = _service(request)
     actor_user_id = _actor(request)
     if permanent:
@@ -657,6 +656,12 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
                 request.app.state,
                 connection_uid,
                 actor_uid,
+            )
+            from .worker import schedule_content_hash_backfill
+
+            schedule_content_hash_backfill(
+                request.app.state,
+                connection_uid,
             )
             logging.info(
                 "Sync for provider '%s' finished: %s",

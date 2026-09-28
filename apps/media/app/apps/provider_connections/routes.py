@@ -6,7 +6,6 @@ connections. Provider type `local` is admin-only (create and use).
 
 import asyncio
 import logging
-from typing import Annotated
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi_mongo_base.errors import NotFoundError
@@ -63,10 +62,30 @@ def _oauth_credentials(request: Request) -> GoogleOAuthCredentials:
     )
 
 
+def _oauth_credentials_for(request: Request) -> dict[str, GoogleOAuthCredentials]:
+    settings = request.app.state.settings
+    return {
+        "google_drive": _oauth_credentials(request),
+        "onedrive": GoogleOAuthCredentials(
+            client_id=settings.onedrive_oauth_client_id,
+            client_secret=settings.onedrive_oauth_client_secret,
+            redirect_uri=settings.onedrive_oauth_redirect_uri,
+            provider_type="onedrive",
+        ),
+        "dropbox": GoogleOAuthCredentials(
+            client_id=settings.dropbox_oauth_client_id,
+            client_secret=settings.dropbox_oauth_client_secret,
+            redirect_uri=settings.dropbox_oauth_redirect_uri,
+            provider_type="dropbox",
+        ),
+    }
+
+
 def _oauth_service(request: Request) -> ProviderOAuthService:
     store: OAuthStateStore = request.app.state.oauth_states
     return ProviderOAuthService(
         credentials=_oauth_credentials(request),
+        provider_credentials=_oauth_credentials_for(request),
         state_store=store,
         connections=_service(request),
     )
@@ -105,11 +124,19 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
         try:
             service = build_media_file_service_from_state(request.app.state)
             await service.import_if_enabled(
-                connection_uid, actor_user_id=actor_uid,
+                connection_uid,
+                actor_user_id=actor_uid,
+            )
+            from apps.media_files.worker import schedule_content_hash_backfill
+
+            schedule_content_hash_backfill(
+                request.app.state,
+                connection_uid,
             )
         except Exception:
             logging.exception(
-                "Import for provider connection '%s' failed", connection_uid,
+                "Import for provider connection '%s' failed",
+                connection_uid,
             )
 
     task = asyncio.create_task(_run())
@@ -171,8 +198,7 @@ async def list_connections(request: Request) -> list[ProviderConnectionResponse]
     """List the caller's storage connections without credentials."""
     user = _user(request)
     return [
-        _response(item)
-        for item in await _repository(request).list(owner_id=user.uid)
+        _response(item) for item in await _repository(request).list(owner_id=user.uid)
     ]
 
 

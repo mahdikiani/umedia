@@ -1,9 +1,10 @@
 """StorageObject database access."""
 
+import builtins
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import StorageObject
@@ -151,6 +152,54 @@ class StorageObjectRepository:
                 query = query.limit(limit).offset(offset)
             result = await session.execute(query)
             return [_to_record(row) for row in result.scalars()]
+
+    async def list_missing_hashes(
+        self,
+        *,
+        provider_connection_id: str,
+        after_uid: str | None = None,
+        limit: int = 100,
+    ) -> builtins.list[StorageObjectRecord]:
+        """Return a bounded, stable page of active files without hashes."""
+        async with self._session_factory() as session:
+            query = select(StorageObject).where(
+                StorageObject.provider_connection_id == provider_connection_id,
+                StorageObject.type == "file",
+                StorageObject.content_hash.is_(None),
+                StorageObject.status == "active",
+                StorageObject.is_deleted.is_(False),
+            )
+            if after_uid is not None:
+                query = query.where(StorageObject.uid > after_uid)
+            result = await session.execute(
+                query.order_by(StorageObject.uid).limit(limit),
+            )
+            return [_to_record(row) for row in result.scalars()]
+
+    async def set_content_hash_if_unchanged(
+        self,
+        *,
+        uid: str,
+        expected_size: int,
+        expected_metadata: dict[str, Any],
+        content_hash: str,
+    ) -> bool:
+        """Set a pending hash only if sync has not refreshed the object."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(StorageObject)
+                .where(
+                    StorageObject.uid == uid,
+                    StorageObject.content_hash.is_(None),
+                    StorageObject.status == "active",
+                    StorageObject.is_deleted.is_(False),
+                    StorageObject.size == expected_size,
+                    StorageObject.object_metadata == expected_metadata,
+                )
+                .values(content_hash=content_hash),
+            )
+            await session.commit()
+            return result.rowcount == 1
 
     async def count(
         self,

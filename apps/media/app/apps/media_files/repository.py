@@ -7,10 +7,11 @@ which is what keeps `GET /files` free of provider I/O
 """
 
 import dataclasses
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -615,6 +616,17 @@ class MediaFileRepository:
             row.deleted_at = datetime.now()
             await session.commit()
 
+    async def soft_delete_many(self, uids: Sequence[str]) -> None:
+        if not uids:
+            return
+        async with self._session_factory() as session:
+            await session.execute(
+                update(MediaFile)
+                .where(MediaFile.uid.in_(uids), MediaFile.is_deleted.is_(False))
+                .values(is_deleted=True, deleted_at=datetime.now()),
+            )
+            await session.commit()
+
     async def restore(self, uid: str) -> None:
         async with self._session_factory() as session:
             result = await session.execute(
@@ -626,8 +638,6 @@ class MediaFileRepository:
             await session.commit()
 
     async def hard_delete(self, uid: str) -> None:
-        """Remove the library row and its links. The StorageObject rows
-        (and remote bytes) deliberately survive -- doc 11's v1 rule."""
         async with self._session_factory() as session:
             links = await session.execute(
                 select(MediaFileObject).where(
@@ -687,6 +697,19 @@ class MediaFileRepository:
         if link is None:
             return None
         return await self.get(link.media_file_id)
+
+    async def list_uids_by_storage_object(
+        self,
+        storage_object_uid: str,
+    ) -> "list[str]":
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MediaFileObject.media_file_id).where(
+                    MediaFileObject.storage_object_id == storage_object_uid,
+                    MediaFileObject.is_deleted.is_(False),
+                ),
+            )
+            return list(result.scalars())
 
     async def list_for_connection(
         self,

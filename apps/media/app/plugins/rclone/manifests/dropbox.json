@@ -1,0 +1,16 @@
+{
+  "id": "dropbox",
+  "name": "Dropbox",
+  "description": "Personal Dropbox and team storage.",
+  "entrypoint": ["python", "-m", "plugins.rclone.main"],
+  "process_id": "rclone",
+  "remote_type": "dropbox",
+  "status": "beta",
+  "connect_flow": "oauth",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    { "key": "token", "label": "OAuth token", "input_type": "password", "secret": true, "required": false },
+    { "key": "client_id", "label": "OAuth client ID", "input_type": "password", "secret": true, "required": false },
+    { "key": "client_secret", "label": "OAuth client secret", "input_type": "password", "secret": true, "required": false }
+  ]
+}

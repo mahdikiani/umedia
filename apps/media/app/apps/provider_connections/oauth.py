@@ -1,16 +1,3 @@
-"""Google Drive OAuth helpers for the localhost-redirect paste flow.
-
-The server never receives Google's redirect itself. The UI shows the
-authorize URL; the user pastes back whatever landed in the browser
-(full URL, query string, bare code, or a ready token JSON). This module
-parses that paste, exchanges a code when needed, and builds the rclone
-`token` JSON blob.
-
-Pending `state` values live in an in-memory map (see `OAuthStateStore`)
-on `app.state` — fine for single-container; multi-replica needs a shared
-store later.
-"""
-
 from __future__ import annotations
 
 import json
@@ -25,16 +12,39 @@ import httpx
 from fastapi_mongo_base.core.exceptions import BaseHTTPException
 
 GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+OAUTH_PROVIDERS = {
+    "google_drive": {
+        "authorization_endpoint": GOOGLE_AUTH_ENDPOINT,
+        "token_endpoint": GOOGLE_OAUTH_URL,
+        "scopes": (GOOGLE_DRIVE_SCOPE,),
+        "authorization_params": {"access_type": "offline", "prompt": "consent"},
+    },
+    "onedrive": {
+        "authorization_endpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "token_endpoint": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": ("offline_access", "Files.ReadWrite", "User.Read"),
+        "authorization_params": {"prompt": "consent"},
+    },
+    "dropbox": {
+        "authorization_endpoint": "https://www.dropbox.com/oauth2/authorize",
+        "token_endpoint": "https://api.dropboxapi.com/oauth2/token",
+        "scopes": (
+            "files.content.read",
+            "files.content.write",
+            "files.metadata.read",
+            "files.metadata.write",
+        ),
+        "authorization_params": {"token_access_type": "offline"},
+    },
+}
 OAUTH_STATE_TTL_SECONDS = 20 * 60
-SUPPORTED_OAUTH_PROVIDERS = frozenset({"google_drive"})
+SUPPORTED_OAUTH_PROVIDERS = frozenset(OAUTH_PROVIDERS)
 
 
 class OAuthConfigurationError(BaseHTTPException):
-    """Google OAuth client env vars are missing."""
-
-    def __init__(self, detail: str = "Google OAuth is not configured") -> None:
+    def __init__(self, detail: str = "OAuth client is not configured") -> None:
         super().__init__(
             status_code=422,
             error_code="oauth_not_configured",
@@ -44,8 +54,6 @@ class OAuthConfigurationError(BaseHTTPException):
 
 
 class OAuthCallbackError(BaseHTTPException):
-    """The pasted callback string could not be understood or validated."""
-
     def __init__(self, detail: str) -> None:
         super().__init__(
             status_code=422,
@@ -56,8 +64,6 @@ class OAuthCallbackError(BaseHTTPException):
 
 
 class OAuthExchangeError(BaseHTTPException):
-    """Google rejected the authorization-code exchange."""
-
     def __init__(self, detail: str) -> None:
         super().__init__(
             status_code=400,
@@ -72,6 +78,7 @@ class GoogleOAuthCredentials:
     client_id: str
     client_secret: str
     redirect_uri: str = "http://localhost"
+    provider_type: str = "google_drive"
 
     @property
     def configured(self) -> bool:
@@ -119,9 +126,7 @@ class OAuthStateStore:
     def _purge_expired(self) -> None:
         cutoff = time.monotonic() - self._ttl
         expired = [
-            key
-            for key, value in self._pending.items()
-            if value.created_at < cutoff
+            key for key, value in self._pending.items() if value.created_at < cutoff
         ]
         for key in expired:
             del self._pending[key]
@@ -132,19 +137,22 @@ def build_auth_url(
     *,
     state: str,
 ) -> str:
-    """Build Google's authorization URL for the paste/localhost flow."""
     if not credentials.configured:
-        raise OAuthConfigurationError()
+        raise OAuthConfigurationError(
+            f"{credentials.provider_type} OAuth is not configured",
+        )
+    provider = OAUTH_PROVIDERS.get(credentials.provider_type)
+    if provider is None:
+        raise OAuthConfigurationError("OAuth provider is not supported")
     params = {
         "client_id": credentials.client_id,
         "redirect_uri": credentials.redirect_uri,
         "response_type": "code",
-        "access_type": "offline",
-        "prompt": "consent",
-        "scope": GOOGLE_DRIVE_SCOPE,
+        "scope": " ".join(provider["scopes"]),
         "state": state,
+        **provider["authorization_params"],
     }
-    return f"{GOOGLE_AUTH_ENDPOINT}?{urlencode(params)}"
+    return f"{provider['authorization_endpoint']}?{urlencode(params)}"
 
 
 def parse_callback(raw: str) -> ParsedCallback:
@@ -271,9 +279,11 @@ async def exchange_code(
     code: str,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Exchange an authorization code for Google tokens."""
     if not credentials.configured:
         raise OAuthConfigurationError()
+    provider = OAUTH_PROVIDERS.get(credentials.provider_type)
+    if provider is None:
+        raise OAuthConfigurationError("OAuth provider is not supported")
 
     payload = {
         "code": code,
@@ -284,7 +294,7 @@ async def exchange_code(
     }
 
     async def _post(http: httpx.AsyncClient) -> httpx.Response:
-        return await http.post(GOOGLE_TOKEN_ENDPOINT, data=payload)
+        return await http.post(provider["token_endpoint"], data=payload)
 
     try:
         if client is None:
@@ -313,6 +323,41 @@ async def exchange_code(
         )
         raise OAuthExchangeError(str(detail))
     return data
+
+
+async def resolve_onedrive_drive(
+    access_token: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, str]:
+    async def _get(http: httpx.AsyncClient) -> httpx.Response:
+        return await http.get(
+            "https://graph.microsoft.com/v1.0/me/drive",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                response = await _get(http)
+        else:
+            response = await _get(client)
+    except httpx.HTTPError as error:
+        raise OAuthExchangeError(str(error)) from error
+
+    try:
+        data = response.json()
+    except ValueError as error:
+        raise OAuthExchangeError(
+            "Microsoft Graph returned invalid drive data",
+        ) from error
+    if response.status_code >= 400 or not isinstance(data, dict) or not data.get("id"):
+        api_error = data.get("error") if isinstance(data, dict) else None
+        detail = api_error.get("message") if isinstance(api_error, dict) else None
+        raise OAuthExchangeError(
+            str(detail or f"Microsoft Graph returned HTTP {response.status_code}"),
+        )
+    return {"id": str(data["id"]), "driveType": str(data.get("driveType", ""))}
 
 
 def resolve_callback_tokens(

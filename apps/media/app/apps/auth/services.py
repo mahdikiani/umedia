@@ -22,6 +22,8 @@ from usso.lite.models import LocalUser
 from usso.lite.schemas import Identifier, LoginRequest, TokenPair
 from usso_jwt.exceptions import JWTError
 
+from server.database import configure_sqlite_engine
+
 from .schemas import MIN_PASSWORD_LENGTH, UserSummary
 
 #: Sentinel distinguishing "argument not passed" from an explicit None
@@ -118,6 +120,8 @@ class AuthService:
     ) -> None:
         self._auth = LiteAuth(config)
         self._database = LiteDatabase(config.database_url)
+        if config.database_url.startswith("sqlite"):
+            configure_sqlite_engine(self._database.engine)
         #: Optional so auth-only tests need not wire the key service;
         #: production always passes one (server/server.py's lifespan) --
         #: users created without it get their key lazily, on first mint.

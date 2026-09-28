@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from apps.media_files.errors import MediaFileValidationError
 from apps.media_files.transfer_repository import TransferRepository
 from apps.media_files.transfer_service import TransferCreate, TransferService
 from tests.media_file_helpers import FakeConnection, Harness, build_harness
@@ -130,7 +131,9 @@ async def test_cross_storage_transfers_into_local_preserve_admin_context(
 @pytest.mark.asyncio
 async def test_single_move_completes(harness: Harness) -> None:
     folder = await harness.service.create_folder(
-        name="docs", parent_id=None, owner_id=OWNER_ID,
+        name="docs",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
     file = await harness.service.upload(
         provider_connection_id=CONNECTION_ID,
@@ -158,17 +161,74 @@ async def test_single_move_completes(harness: Harness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_move_to_current_parent_is_rejected_before_enqueue(
+    harness: Harness,
+) -> None:
+    file = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="already-at-root.txt",
+        content=b"x",
+        owner_id=OWNER_ID,
+    )
+    transfers = _transfers(harness)
+
+    with pytest.raises(MediaFileValidationError):
+        await transfers.create_and_enqueue(
+            OWNER_ID,
+            TransferCreate(
+                operation="move",
+                source_ids=[file.uid],
+                dest_parent_id=None,
+            ),
+            schedule=False,
+        )
+
+    assert await transfers.list_for_user(actor_user_id=OWNER_ID) == []
+
+
+@pytest.mark.asyncio
+async def test_move_folder_into_itself_is_rejected_before_enqueue(
+    harness: Harness,
+) -> None:
+    folder = await harness.service.create_folder(
+        name="folder",
+        parent_id=None,
+        owner_id=OWNER_ID,
+    )
+    transfers = _transfers(harness)
+
+    with pytest.raises(MediaFileValidationError):
+        await transfers.create_and_enqueue(
+            OWNER_ID,
+            TransferCreate(
+                operation="move",
+                source_ids=[folder.uid],
+                dest_parent_id=folder.uid,
+            ),
+            schedule=False,
+        )
+
+    assert await transfers.list_for_user(actor_user_id=OWNER_ID) == []
+
+
+@pytest.mark.asyncio
 async def test_bulk_move_progress_reaches_100(harness: Harness) -> None:
     dest = await harness.service.create_folder(
-        name="dest", parent_id=None, owner_id=OWNER_ID,
+        name="dest",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
-    sources = [await harness.service.upload(
-                provider_connection_id=CONNECTION_ID,
-                parent_id=None,
-                name=name,
-                content=name.encode(),
-                owner_id=OWNER_ID,
-            ) for name in ("a.txt", "b.txt", "c.txt")]
+    sources = [
+        await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name=name,
+            content=name.encode(),
+            owner_id=OWNER_ID,
+        )
+        for name in ("a.txt", "b.txt", "c.txt")
+    ]
     transfers = _transfers(harness)
 
     job = await _run(
@@ -191,7 +251,9 @@ async def test_bulk_move_progress_reaches_100(harness: Harness) -> None:
 @pytest.mark.asyncio
 async def test_copy_same_storage_shares_storage_object(harness: Harness) -> None:
     dest = await harness.service.create_folder(
-        name="dest", parent_id=None, owner_id=OWNER_ID,
+        name="dest",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
     original = await harness.service.upload(
         provider_connection_id=CONNECTION_ID,
@@ -227,10 +289,14 @@ async def test_copy_same_storage_shares_storage_object(harness: Harness) -> None
 @pytest.mark.asyncio
 async def test_copy_folder_recursively(harness: Harness) -> None:
     dest = await harness.service.create_folder(
-        name="dest", parent_id=None, owner_id=OWNER_ID,
+        name="dest",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
     source_folder = await harness.service.create_folder(
-        name="album", parent_id=None, owner_id=OWNER_ID,
+        name="album",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
     await harness.service.upload(
         provider_connection_id=CONNECTION_ID,
@@ -240,7 +306,9 @@ async def test_copy_folder_recursively(harness: Harness) -> None:
         owner_id=OWNER_ID,
     )
     nested = await harness.service.create_folder(
-        name="raw", parent_id=source_folder.uid, owner_id=OWNER_ID,
+        name="raw",
+        parent_id=source_folder.uid,
+        owner_id=OWNER_ID,
     )
     await harness.service.upload(
         provider_connection_id=CONNECTION_ID,
@@ -287,7 +355,9 @@ async def test_cross_storage_move_copies_then_soft_deletes_source(
             "default_connection_id": CONNECTION_ID,
         })
         source_folder = await harness.service.create_folder(
-            name="FromA", parent_id=None, owner_id=OWNER_ID,
+            name="FromA",
+            parent_id=None,
+            owner_id=OWNER_ID,
         )
         original = await harness.service.upload(
             parent_id=source_folder.uid,
@@ -297,7 +367,9 @@ async def test_cross_storage_move_copies_then_soft_deletes_source(
         )
         await harness.settings.update({"default_connection_id": CONNECTION_2})
         dest = await harness.service.create_folder(
-            name="ToB", parent_id=None, owner_id=OWNER_ID,
+            name="ToB",
+            parent_id=None,
+            owner_id=OWNER_ID,
         )
         assert dest.provider_connection_id == CONNECTION_2
         transfers = _transfers(harness)
@@ -331,7 +403,9 @@ async def test_create_and_enqueue_schedules_background_task(
     harness: Harness,
 ) -> None:
     folder = await harness.service.create_folder(
-        name="docs", parent_id=None, owner_id=OWNER_ID,
+        name="docs",
+        parent_id=None,
+        owner_id=OWNER_ID,
     )
     file = await harness.service.upload(
         provider_connection_id=CONNECTION_ID,
@@ -373,7 +447,7 @@ async def test_get_transfer_not_found_for_other_user(harness: Harness) -> None:
     transfers = _transfers(harness)
     job = await transfers.create_and_enqueue(
         OWNER_ID,
-        TransferCreate(operation="move", source_ids=[file.uid], dest_parent_id=None),
+        TransferCreate(operation="copy", source_ids=[file.uid], dest_parent_id=None),
         schedule=False,
     )
     with pytest.raises(Exception) as exc:
@@ -397,8 +471,6 @@ def test_humanize_getobject_403_vs_putobject() -> None:
     )
     assert "GetObject 403" in gzip_msg
 
-    put_msg = _humanize_transfer_error(
-        "PutObject failed: AccessDenied 403 Forbidden"
-    )
+    put_msg = _humanize_transfer_error("PutObject failed: AccessDenied 403 Forbidden")
     assert "PutObject" in put_msg or "denied the write" in put_msg
     assert "GetObject" not in put_msg

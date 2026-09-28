@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # `import_existing` (apps/provider_connections/routes.py) -- same
     # keep-a-strong-reference + wait-on-shutdown deal as the tus tasks.
     app.state.import_tasks = set()
+    app.state.hash_tasks = {}
     # Background library transfer jobs (`POST /files/transfers`) -- same
     # keep-a-strong-reference + wait-on-shutdown deal as import/tus tasks.
     app.state.transfer_tasks = set()
@@ -174,6 +175,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             app.state.tus_finalize_tasks
             | app.state.import_tasks
             | app.state.transfer_tasks
+            | set(app.state.hash_tasks.values())
         )
         if background_tasks:
             # Bounded, same rationale as PluginProcessManager's graceful

@@ -34,6 +34,20 @@ async def test_is_configured_starts_false(auth_service: AuthService) -> None:
 
 
 @pytest.mark.asyncio
+async def test_auth_database_uses_wal_and_extended_busy_timeout(
+    auth_service: AuthService,
+) -> None:
+    async with auth_service.database.engine.connect() as connection:
+        journal_mode = await connection.exec_driver_sql("PRAGMA journal_mode")
+        journal_mode_value = journal_mode.scalar_one().lower()
+        busy_timeout = await connection.exec_driver_sql("PRAGMA busy_timeout")
+        busy_timeout_value = busy_timeout.scalar_one()
+
+    assert journal_mode_value == "wal"
+    assert busy_timeout_value == 30_000
+
+
+@pytest.mark.asyncio
 async def test_setup_creates_the_one_administrator_and_logs_in(
     auth_service: AuthService,
 ) -> None:

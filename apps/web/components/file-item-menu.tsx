@@ -39,6 +39,9 @@ type FileItemMenuProps = {
   onAddToTemporary: (item: MediaFileItem) => void;
   onShare: (item: MediaFileItem) => void;
   onDelete: (item: MediaFileItem) => void;
+  onMoveToOtherSide?: (item: MediaFileItem) => void;
+  onCopyToOtherSide?: (item: MediaFileItem) => void;
+  otherSideParentId?: string | null;
 };
 
 export function FileItemMenu({
@@ -49,7 +52,13 @@ export function FileItemMenu({
   onAddToTemporary,
   onShare,
   onDelete,
+  onMoveToOtherSide,
+  onCopyToOtherSide,
+  otherSideParentId,
 }: FileItemMenuProps) {
+  const moveToOtherSideDisabled =
+    otherSideParentId !== undefined &&
+    (item.parent_id === otherSideParentId || item.uid === otherSideParentId);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -78,6 +87,24 @@ export function FileItemMenu({
         <DropdownMenuItem onClick={() => onCopy(item)}>
           <Copy /> Copy to…
         </DropdownMenuItem>
+        {onMoveToOtherSide || onCopyToOtherSide ? (
+          <>
+            <DropdownMenuSeparator />
+            {onMoveToOtherSide ? (
+              <DropdownMenuItem
+                disabled={moveToOtherSideDisabled}
+                onClick={() => onMoveToOtherSide(item)}
+              >
+                <FolderInput /> Move to other side
+              </DropdownMenuItem>
+            ) : null}
+            {onCopyToOtherSide ? (
+              <DropdownMenuItem onClick={() => onCopyToOtherSide(item)}>
+                <Copy /> Copy to other side
+              </DropdownMenuItem>
+            ) : null}
+          </>
+        ) : null}
         <DropdownMenuItem onClick={() => onAddToTemporary(item)}>
           <Inbox /> Add to Temporary
         </DropdownMenuItem>

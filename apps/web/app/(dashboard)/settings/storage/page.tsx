@@ -233,19 +233,24 @@ export default function StorageSettingsPage() {
       <PlacementSettingsCard connections={connections} isAdmin={isAdmin} />
 
       <Dialog onOpenChange={setStorageDialogOpen} open={storageDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add storage</DialogTitle>
           </DialogHeader>
-          <AddStorageForm
-            onCancel={() => setStorageDialogOpen(false)}
-            onCreated={(connection) => {
-              setConnections((previous) => [connection, ...previous]);
-              setStorageDialogOpen(false);
-              toast.success(`${connection.name} connected.`);
-            }}
-            providerTypes={providerTypes}
-          />
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            data-slot="storage-dialog-scroll-area"
+          >
+            <AddStorageForm
+              onCancel={() => setStorageDialogOpen(false)}
+              onCreated={(connection) => {
+                setConnections((previous) => [connection, ...previous]);
+                setStorageDialogOpen(false);
+                toast.success(`${connection.name} connected.`);
+              }}
+              providerTypes={providerTypes}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

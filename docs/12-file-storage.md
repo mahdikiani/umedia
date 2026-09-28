@@ -97,8 +97,9 @@ version to MediaFile `history`.
   itself provider-backed on the same connection. Pure library folders
   have no remote counterpart.
 - **Delete (v1)** — MediaFile only (soft-delete tree, then optional
-  hard-delete of the library row and its links). The StorageObject and
-  the remote bytes stay. Trash is a library feature, not a remote delete.
+  hard-delete of the library row and its links). Permanent deletion also
+  removes the unshared remote object; shared objects stay until their last
+  library link is removed.
 
 ## Import and sync
 
@@ -141,7 +142,8 @@ MediaFile → primary StorageObject → plugin stream. ACL is on MediaFile,
 not on the file on disk.
 
 S3 DeleteObject / DeleteObjects soft-delete the MediaFile (trash). The
-StorageObject and provider bytes stay, same v1 rule as `DELETE /files`.
+StorageObject index rows are retained as soft-deleted audit records after
+the provider object is removed.
 
 ## Short rule
 

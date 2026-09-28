@@ -95,7 +95,7 @@ for them. Missing or unowned connection ids return `404` (no existence leak).
 | `GET` | `/providers/{uid}/sync` | owner-only; `{status: "idle"\|"running", connection_id}` — whether a background sync is in flight (manual POST or the interval poller; both use `active_syncs`; Storage UI polls this) |
 | `POST` | `/providers/{uid}/sync` | owner-only; **202 Accepted** — schedules background reconcile immediately (plugin list → upsert StorageObjects → MediaFiles; complete walk marks unseen objects `missing` and trashes linked library files; reappear restores the same MediaFile uid; remote-newer snapshots prior index into MediaFile `history`; ours-newer with `mirror_structure` pushes content back). Interval polling of enabled connections (`UMEDIA_SYNC_POLL_INTERVAL_SECONDS`, default 900) runs the same reconcile. |
 
-| `POST` | `/providers/oauth/start` | begin Google Drive OAuth paste flow — returns `{authorization_url, state, redirect_uri}`; requires `UMEDIA_GOOGLE_OAUTH_*` (422 if unset); authenticated |
+| `POST` | `/providers/oauth/start` | begin Google Drive, OneDrive, or Dropbox OAuth paste flow — returns `{authorization_url, state, redirect_uri}`; requires that provider's `UMEDIA_*_OAUTH_CLIENT_ID` and `UMEDIA_*_OAUTH_CLIENT_SECRET` (422 if unset); authenticated |
 | `POST` | `/providers/oauth/complete` | paste redirect URL / code / token JSON → exchange if needed → create `ProviderConnection` (same response shape as `POST /providers`) |
 
 The older `{uid}/oauth/callback` server-side redirect shape is **not** used;

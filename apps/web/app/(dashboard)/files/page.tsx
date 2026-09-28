@@ -56,6 +56,7 @@ import {
   addToTemporary as addTemporaryPointers,
   api,
   apiForm,
+  createTransfer,
   LIST_PAGE_SIZE,
   type MediaFileItem,
   type Page,
@@ -193,6 +194,7 @@ function FilesBrowser() {
   const [destDialog, setDestDialog] = useState<{
     operation: "move" | "copy";
     sourceIds: string[];
+    sourceParentIds: (string | null)[];
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -204,8 +206,11 @@ function FilesBrowser() {
     setRefreshToken((value) => value + 1);
   }, []);
 
-  const { jobs: transferJobs, track: trackTransfer, dismiss: dismissTransfer } =
-    useTransferTracker(bumpRefresh);
+  const {
+    jobs: transferJobs,
+    track: trackTransfer,
+    dismiss: dismissTransfer,
+  } = useTransferTracker(bumpRefresh);
 
   useEffect(() => {
     try {
@@ -567,6 +572,24 @@ function FilesBrowser() {
     trackTransfer(job);
   }
 
+  async function transferToOtherSide(
+    item: MediaFileItem,
+    operation: "move" | "copy",
+    destinationId: string | null,
+  ) {
+    try {
+      const job = await createTransfer({
+        operation,
+        source_ids: [item.uid],
+        dest_parent_id: destinationId,
+      });
+      onTransferCreated(job);
+      toast.success(operation === "move" ? "Moving to other side…" : "Copying to other side…");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not start transfer.");
+    }
+  }
+
   const addToTemporary = useCallback(
     async (ids: string[]) => {
       if (ids.length === 0) return;
@@ -601,9 +624,17 @@ function FilesBrowser() {
     busyUid,
     onRename: openRename,
     onMove: (item: MediaFileItem) =>
-      setDestDialog({ operation: "move", sourceIds: [item.uid] }),
+      setDestDialog({
+        operation: "move",
+        sourceIds: [item.uid],
+        sourceParentIds: [item.parent_id],
+      }),
     onCopy: (item: MediaFileItem) =>
-      setDestDialog({ operation: "copy", sourceIds: [item.uid] }),
+      setDestDialog({
+        operation: "copy",
+        sourceIds: [item.uid],
+        sourceParentIds: [item.parent_id],
+      }),
     onAddToTemporary: (item: MediaFileItem) => {
       void addToTemporary([item.uid]);
     },
@@ -650,7 +681,8 @@ function FilesBrowser() {
           hidden
           multiple
           onChange={(event) => {
-            if (event.target.files?.length) void uploadFiles(event.target.files);
+            if (event.target.files?.length)
+              void uploadFiles(event.target.files);
             event.target.value = "";
           }}
           ref={fileInputRef}
@@ -778,10 +810,7 @@ function FilesBrowser() {
         </div>
       )}
 
-      <TransferProgressPanel
-        jobs={transferJobs}
-        onDismiss={dismissTransfer}
-      />
+      <TransferProgressPanel jobs={transferJobs} onDismiss={dismissTransfer} />
 
       <div
         className={
@@ -795,6 +824,8 @@ function FilesBrowser() {
           onNavigate={(uid) => router.push(primaryHref(uid))}
           paneId="primary"
           parentId={currentParentId}
+          otherSideParentId={dualPane ? secondaryParentId : undefined}
+          onTransferToOtherSide={dualPane ? transferToOtherSide : undefined}
           query={query}
           showBreadcrumb
         />
@@ -805,6 +836,8 @@ function FilesBrowser() {
             onNavigate={setSecondaryParentPersisted}
             paneId="secondary"
             parentId={secondaryParentId}
+            otherSideParentId={currentParentId}
+            onTransferToOtherSide={transferToOtherSide}
             query=""
             showBreadcrumb
           />
@@ -826,6 +859,7 @@ function FilesBrowser() {
         open={destDialog !== null}
         operation={destDialog?.operation ?? "move"}
         sourceIds={destDialog?.sourceIds ?? []}
+        sourceParentIds={destDialog?.sourceParentIds ?? []}
       />
 
       <Dialog onOpenChange={setNewFolderOpen} open={newFolderOpen}>

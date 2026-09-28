@@ -69,6 +69,7 @@ def _connection_service(harness: Harness) -> ProviderConnectionService:
 @pytest.mark.asyncio
 async def test_delete_connection_soft_deletes_library_keeps_objects(
     harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     uid = await _persist_connection(harness)
     await harness.settings.update(
@@ -101,6 +102,15 @@ async def test_delete_connection_soft_deletes_library_keeps_objects(
     child_obj_uid = child.storage_object_uid
     root_obj_uid = root_file.storage_object_uid
 
+    original_bulk_delete = harness.files.soft_delete_many
+    bulk_delete_calls: list[list[str]] = []
+
+    async def record_bulk_delete(uids: list[str]) -> None:
+        bulk_delete_calls.append(uids)
+        await original_bulk_delete(uids)
+
+    monkeypatch.setattr(harness.files, "soft_delete_many", record_bulk_delete)
+
     deleted = await _connection_service(harness).delete(
         uid,
         owner_id=OWNER_ID,
@@ -108,6 +118,8 @@ async def test_delete_connection_soft_deletes_library_keeps_objects(
         placement=harness.settings,
     )
     assert deleted is True
+    assert len(bulk_delete_calls) == 1
+    assert set(bulk_delete_calls[0]) == {folder.uid, child.uid, root_file.uid}
 
     assert await ProviderConnectionRepository(harness.session_factory).get(
         uid, owner_id=OWNER_ID,

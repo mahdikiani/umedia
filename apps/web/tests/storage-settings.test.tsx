@@ -86,6 +86,30 @@ describe("storage settings", () => {
     expect(screen.queryByRole("heading", { name: "Account" })).not.toBeInTheDocument();
   });
 
+  it("keeps the add-storage dialog wide and its form scrollable within the viewport", async () => {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers")) return jsonResponse([connection]);
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Add storage" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("sm:max-w-2xl");
+    expect(dialog).toHaveClass("max-h-[calc(100dvh-2rem)]");
+    expect(dialog).toHaveClass("overflow-hidden");
+    expect(dialog.querySelector("[data-slot='storage-dialog-scroll-area']"))
+      .toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+  });
+
   it("lets an admin toggle provider import/mirror flags", async () => {
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

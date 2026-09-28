@@ -35,6 +35,7 @@ type TransferDestinationDialogProps = {
   onOpenChange: (open: boolean) => void;
   operation: "move" | "copy";
   sourceIds: string[];
+  sourceParentIds: (string | null)[];
   onCreated: (job: TransferJob) => void;
 };
 
@@ -53,6 +54,7 @@ export function TransferDestinationDialog({
   onOpenChange,
   operation,
   sourceIds,
+  sourceParentIds,
   onCreated,
 }: TransferDestinationDialogProps) {
   const [parentId, setParentId] = useState<string | null>(null);
@@ -145,6 +147,10 @@ export function TransferDestinationDialog({
 
   const title = operation === "move" ? "Move to…" : "Copy to…";
   const confirmLabel = operation === "move" ? "Move here" : "Copy here";
+  const sameDestination =
+    operation === "move" &&
+    (sourceParentIds.some((sourceParentId) => sourceParentId === parentId) ||
+      sourceIds.includes(parentId ?? ""));
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -204,7 +210,10 @@ export function TransferDestinationDialog({
           <Button onClick={() => onOpenChange(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={submitting} onClick={() => void confirm()}>
+          <Button
+            disabled={submitting || sameDestination}
+            onClick={() => void confirm()}
+          >
             {confirmLabel}
           </Button>
         </DialogFooter>

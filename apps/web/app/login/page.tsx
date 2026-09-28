@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useEffect, useState } from "react";
 
 import { GoogleOidcLogin } from "@/components/google-oidc-login";
+import { PublicLegalFooter } from "@/components/public-legal-footer";
 import { useLocale } from "@/components/locale-provider";
 import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -166,6 +167,7 @@ function LoginPageContent() {
             )}
           </CardContent>
         </Card>
+        <PublicLegalFooter />
       </div>
     </main>
   );

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { GoogleDriveOauthForm } from "@/components/google-drive-oauth-form";
+import { OAuthProviderForm } from "@/components/google-drive-oauth-form";
 import { StorageProviderIcon } from "@/components/storage-provider-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -94,7 +94,7 @@ export function AddStorageForm({
 
   if (selected.connect_flow === "oauth") {
     return (
-      <GoogleDriveOauthForm
+      <OAuthProviderForm
         onBack={() => setSelectedId(null)}
         onCancel={onCancel}
         onCreated={onCreated}
@@ -183,7 +183,7 @@ export function AddStorageForm({
         </div>
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex justify-end gap-3 border-t pt-4">
+      <div className="sticky bottom-0 z-10 flex justify-end gap-3 border-t bg-popover pt-4">
         {onCancel && (
           <Button onClick={onCancel} type="button" variant="outline">
             Cancel

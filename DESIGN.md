@@ -31,6 +31,14 @@ Use the existing Tailwind spacing scale, with `gap-2` for compact action groups,
 `gap-3` between toolbar regions, and `space-y-4` between page sections. Dashboard
 toolbars use wrapping flex layouts so controls remain usable without horizontal
 overflow. Primary content tables sit in a `rounded-xl border` container.
+The dual-pane Files view follows StyleGallery's
+[`split-screen`](https://github.com/changeroa/StyleGallery/blob/main/patterns/split-sidebar/split-screen.md)
+pattern: equal
+tracks use `minmax(0, 1fr)` at the wide layout breakpoint and stack when space
+is tight. Each pane may shrink to its grid track; the document keeps vertical
+scroll ownership, and the file table never introduces horizontal scrolling.
+The five table columns use a fixed layout with bounded metadata columns. The
+name cell truncates long names and exposes the full value on hover.
 
 ## 5. Component patterns
 
@@ -39,8 +47,15 @@ overflow. Primary content tables sit in a `rounded-xl border` container.
   treatment.
 - Select menus use the shared popover surface, check indicator, focus highlight,
   and restrained opening motion.
+- Long storage-setup dialogs use a viewport-bounded shell: the title stays in
+  place, the form body owns vertical scrolling, and its action row stays pinned
+  to the bottom of that scroll area. The body must be allowed to shrink with
+  `min-h-0`; the dialog width expands to `sm:max-w-2xl` for provider OAuth.
 - Mutations refresh the current browse context; view controls update URL state so
   browser history and deep links remain meaningful.
+- File browser lists preserve all five columns inside a pane. Long filenames
+  truncate in the name column while retaining their full value in the hover
+  title; tables do not scroll horizontally.
 
 ## 6. Interaction states
 

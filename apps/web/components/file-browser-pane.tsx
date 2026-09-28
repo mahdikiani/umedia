@@ -105,6 +105,12 @@ export type FileBrowserPaneProps = {
   onDelete: (item: MediaFileItem) => void;
   onToggleStar: (item: MediaFileItem) => void;
   onTransferCreated: (job: TransferJob) => void;
+  otherSideParentId?: string | null;
+  onTransferToOtherSide?: (
+    item: MediaFileItem,
+    operation: "move" | "copy",
+    destinationId: string | null,
+  ) => void;
   /** After a Temporary→folder move, pointers were dropped — refresh dock. */
   onTemporaryPointersChanged?: () => void;
   refreshToken?: number;
@@ -183,6 +189,8 @@ export function FileBrowserPane({
   onDelete,
   onToggleStar,
   onTransferCreated,
+  otherSideParentId,
+  onTransferToOtherSide,
   onTemporaryPointersChanged,
   refreshToken = 0,
   showBreadcrumb = true,
@@ -195,6 +203,16 @@ export function FileBrowserPane({
   const [loading, setLoading] = useState(true);
   const [dropActive, setDropActive] = useState(false);
   const [folderDropUid, setFolderDropUid] = useState<string | null>(null);
+  const otherSideMenuProps =
+    otherSideParentId !== undefined && onTransferToOtherSide
+      ? {
+          otherSideParentId,
+          onMoveToOtherSide: (source: MediaFileItem) =>
+            onTransferToOtherSide(source, "move", otherSideParentId),
+          onCopyToOtherSide: (source: MediaFileItem) =>
+            onTransferToOtherSide(source, "copy", otherSideParentId),
+        }
+      : {};
 
   useEffect(() => {
     let cancelled = false;
@@ -480,7 +498,17 @@ export function FileBrowserPane({
 
       {filesView === "list" ? (
         <div className="overflow-hidden rounded-xl border">
-          <Table>
+          <Table
+            className="table-fixed"
+            containerClassName="overflow-x-hidden"
+          >
+            <colgroup>
+              <col className="w-[40%]" />
+              <col className="w-[20%]" />
+              <col className="w-[11%]" />
+              <col className="w-[19%]" />
+              <col className="w-[10%]" />
+            </colgroup>
             <TableHeader>
               <TableRow>
                 {SORTABLE_COLUMNS.map((column) => {
@@ -493,19 +521,11 @@ export function FileBrowserPane({
                   return (
                     <TableHead
                       aria-sort={state}
-                      className={
-                        column.key === "type"
-                          ? "w-48"
-                          : column.key === "size"
-                            ? "w-28"
-                            : column.key === "updated_at"
-                              ? "w-32"
-                              : undefined
-                      }
+                      className="px-1"
                       key={column.key}
                     >
                       <Button
-                        className="-ms-2.5 font-medium"
+                        className="-ms-1 min-w-0 px-0.5 text-xs font-medium"
                         disabled={!onSortChange}
                         onClick={() => cycleSort(column.key)}
                         size="sm"
@@ -522,7 +542,7 @@ export function FileBrowserPane({
                     </TableHead>
                   );
                 })}
-                <TableHead className="w-10" />
+                <TableHead className="w-[10%] px-1" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -562,15 +582,15 @@ export function FileBrowserPane({
                       data-drop-folder={isFolder ? item.uid : undefined}
                       key={item.uid}
                     >
-                      <TableCell {...dropProps}>
+                      <TableCell className="min-w-0" {...dropProps}>
                         <div
-                          className="flex items-center gap-2"
+                          className="flex min-w-0 items-center gap-2"
                           {...itemDragProps(item)}
                         >
                           {item.type === "folder" ? (
                             linkNavigation && folderHref ? (
                               <Link
-                                className="flex min-w-0 items-center gap-2 font-medium hover:underline"
+                                className="flex min-w-0 flex-1 items-center gap-2 font-medium hover:underline"
                                 href={hrefFor(item.uid)}
                                 {...folderLinkDragGuard()}
                                 onClick={() =>
@@ -588,11 +608,13 @@ export function FileBrowserPane({
                                     item={item}
                                   />
                                 </span>
-                                <span className="truncate">{item.name}</span>
+                                <span className="truncate" title={item.name}>
+                                  {item.name}
+                                </span>
                               </Link>
                             ) : (
                               <button
-                                className="flex min-w-0 items-center gap-2 font-medium hover:underline"
+                                className="flex min-w-0 flex-1 items-center gap-2 font-medium hover:underline"
                                 {...folderLinkDragGuard()}
                                 onClick={() => {
                                   rememberRecent({
@@ -611,12 +633,14 @@ export function FileBrowserPane({
                                     item={item}
                                   />
                                 </span>
-                                <span className="truncate">{item.name}</span>
+                                <span className="truncate" title={item.name}>
+                                  {item.name}
+                                </span>
                               </button>
                             )
                           ) : (
                             <a
-                              className="flex min-w-0 items-center gap-2 font-medium hover:underline"
+                              className="flex min-w-0 flex-1 items-center gap-2 font-medium hover:underline"
                               href={fileContentUrl(item.uid, item.name)}
                               onClick={() =>
                                 rememberRecent({
@@ -631,7 +655,9 @@ export function FileBrowserPane({
                               <span className="size-5 shrink-0">
                                 <FileThumbnail compact decorative item={item} />
                               </span>
-                              <span className="truncate">{item.name}</span>
+                              <span className="truncate" title={item.name}>
+                                {item.name}
+                              </span>
                             </a>
                           )}
                           {!parentId &&
@@ -684,32 +710,34 @@ export function FileBrowserPane({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell {...dropProps}>
+                      <TableCell className="min-w-0 px-1" {...dropProps}>
                         <FileTypeChip
                           active={typeFilter === typeFilterKey(item)}
+                          className="min-w-0"
                           item={item}
                           onToggle={onTypeFilterToggle ?? (() => undefined)}
                         />
                       </TableCell>
                       <TableCell
-                        className="text-muted-foreground"
+                        className="min-w-0 whitespace-normal break-words text-muted-foreground"
                         {...dropProps}
                       >
                         {item.type === "folder" ? "—" : formatBytes(item.size)}
                       </TableCell>
                       <TableCell
-                        className="text-muted-foreground"
+                        className="min-w-0 whitespace-normal break-words text-muted-foreground"
                         {...dropProps}
                       >
                         {new Date(item.updated_at).toLocaleDateString()}
                       </TableCell>
-                      <TableCell {...dropProps}>
+                      <TableCell className="px-1" {...dropProps}>
                         <FileItemMenu
                           item={item}
                           onAddToTemporary={onAddToTemporary}
                           onCopy={onCopy}
                           onDelete={onDelete}
                           onMove={onMove}
+                          {...otherSideMenuProps}
                           onRename={onRename}
                           onShare={onShare}
                         />
@@ -842,6 +870,7 @@ export function FileBrowserPane({
                               onCopy={onCopy}
                               onDelete={onDelete}
                               onMove={onMove}
+                              {...otherSideMenuProps}
                               onRename={onRename}
                               onShare={onShare}
                             />
@@ -928,6 +957,7 @@ export function FileBrowserPane({
                               onCopy={onCopy}
                               onDelete={onDelete}
                               onMove={onMove}
+                              {...otherSideMenuProps}
                               onRename={onRename}
                               onShare={onShare}
                             />

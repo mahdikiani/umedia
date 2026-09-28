@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "doctor": "npx react-doctor@latest"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -39,6 +40,9 @@
     "eslint": "9.39.2",
     "eslint-config-next": "latest",
     "jsdom": "latest",
+    "react-doctor": "^0.9.14",
+    "react-grab": "^0.2.0",
+    "react-scan": "^0.5.7",
     "tailwindcss": "latest",
     "typescript": "6.0.2",
     "vitest": "latest"

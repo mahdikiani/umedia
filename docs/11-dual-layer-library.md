@@ -131,10 +131,12 @@ the same MediaFile uid is restored (stars/shares survive). A MediaFile
 the user trashed while the StorageObject was still `active` is left in
 trash.
 
-- Per file: store a streamed **SHA-256 `content_hash`** when unknown or
-  when size/`mtime` changed; reuse the prior hash when unchanged.
-  Uploads hash at write time the same way. Folders keep `content_hash`
-  null.
+- Structural listing does not read file contents. Unknown or changed file
+  hashes stay null while the walk imports the complete tree; a retained
+  background task then streams SHA-256 hashes in bounded pages. If the
+  process restarts or a provider read fails, later syncs retry the pending
+  hashes. Existing hashes are reused when size/`mtime` are unchanged.
+  Uploads hash at write time. Folders keep `content_hash` null.
 - If the remote is newer (mtime/size), prior indexed metadata is appended
   to the linked MediaFile `history`; if ours is newer and
   `mirror_structure` is on, content is pushed to the provider.

@@ -76,6 +76,7 @@ class FakeMediaPluginGateway:
         self.calls: list[tuple] = []
         self.fail_create = False
         self.fail_update = False
+        self.fail_delete = False
         #: Raise from `list_resources` when `parent_id` is in this set.
         #: Used to prove an incomplete walk never looks like mass deletion.
         self.fail_list_at: set[str | None] = set()
@@ -164,6 +165,8 @@ class FakeMediaPluginGateway:
         self, provider_connection_id: str, content_reference: str,
     ) -> None:
         self.calls.append(("delete", provider_connection_id, content_reference))
+        if self.fail_delete:
+            raise RuntimeError("simulated plugin crash on delete")
         self.store.pop(content_reference, None)
 
     async def read_content(

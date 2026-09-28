@@ -64,11 +64,7 @@ def _humanize_transfer_error(message: str) -> str:
             "same-storage paste still works for real folders; "
             "fix the source key's read permission for cross-storage copy."
         )
-    if (
-        "403" in message
-        or "forbidden" in lower
-        or "accessdenied" in compact
-    ):
+    if "403" in message or "forbidden" in lower or "accessdenied" in compact:
         return (
             "Destination storage denied the write (403 Forbidden). "
             "The access key for that connection can list/import objects "
@@ -113,13 +109,20 @@ class TransferService:
         if not body.source_ids:
             raise MediaFileValidationError("source_ids must contain at least one id")
         # Validate sources + dest up front so a bad request fails before 202.
-        sources = []
-        for source_id in body.source_ids:
-            sources.append(
-                await self._media.get(source_id, actor_user_id=actor_user_id),
+        sources = [
+            await self._media.get(source_id, actor_user_id=actor_user_id)
+            for source_id in body.source_ids
+        ]
+        if body.operation == "move" and any(
+            source.parent_id == body.dest_parent_id
+            or (source.type == "folder" and source.uid == body.dest_parent_id)
+            for source in sources
+        ):
+            raise MediaFileValidationError(
+                "A move destination must differ from each source's current folder",
             )
         if body.dest_parent_id is not None:
-            await self._media._writable_folder(  # noqa: SLF001 -- shared gate
+            await self._media._writable_folder(
                 body.dest_parent_id,
                 actor_user_id=actor_user_id,
             )
@@ -151,7 +154,10 @@ class TransferService:
         return record
 
     async def get(
-        self, uid: str, *, actor_user_id: str,
+        self,
+        uid: str,
+        *,
+        actor_user_id: str,
     ) -> TransferRecord:
         record = await self._transfers.get(uid)
         if record is None or record.owner_id != actor_user_id:
@@ -159,10 +165,14 @@ class TransferService:
         return record
 
     async def list_for_user(
-        self, *, actor_user_id: str, limit: int = 50,
+        self,
+        *,
+        actor_user_id: str,
+        limit: int = 50,
     ) -> list[TransferRecord]:
         return await self._transfers.list_for_owner(
-            owner_id=actor_user_id, limit=limit,
+            owner_id=actor_user_id,
+            limit=limit,
         )
 
     async def run_job(self, uid: str) -> TransferRecord:
@@ -170,17 +180,21 @@ class TransferService:
         if record is None:
             raise MediaFileNotFoundError(uid)
         actor = record.owner_id
-        await self._transfers.update(uid, {
-            "status": "running",
-            "started_at": datetime.now(),
-            "current_name": None,
-            "error": None,
-        })
+        await self._transfers.update(
+            uid,
+            {
+                "status": "running",
+                "started_at": datetime.now(),
+                "current_name": None,
+                "error": None,
+            },
+        )
         try:
             for source_id in record.source_ids:
                 try:
                     source = await self._media.get(
-                        source_id, actor_user_id=actor,
+                        source_id,
+                        actor_user_id=actor,
                     )
                 except MediaFileNotFoundError as error:
                     await self._mark_item_failed(uid, _exception_message(error))
@@ -202,19 +216,24 @@ class TransferService:
                             actor_user_id=actor,
                             is_admin=record.is_admin,
                         )
-                except Exception as error:  # noqa: BLE001 -- per-item isolation
+                except Exception as error:
                     logger.exception("transfer item failed: %s", source_id)
                     await self._mark_item_failed(
-                        uid, _exception_message(error), name=source.name,
+                        uid,
+                        _exception_message(error),
+                        name=source.name,
                     )
-        except Exception as error:  # noqa: BLE001 -- job-level failure
+        except Exception as error:
             logger.exception("transfer job failed: %s", uid)
-            return await self._transfers.update(uid, {
-                "status": "failed",
-                "error": _humanize_transfer_error(_exception_message(error)),
-                "finished_at": datetime.now(),
-                "current_name": None,
-            })
+            return await self._transfers.update(
+                uid,
+                {
+                    "status": "failed",
+                    "error": _humanize_transfer_error(_exception_message(error)),
+                    "finished_at": datetime.now(),
+                    "current_name": None,
+                },
+            )
 
         final = await self._transfers.get(uid)
         assert final is not None  # noqa: S101
@@ -224,11 +243,14 @@ class TransferService:
             status = "failed"
         else:
             status = "partial"
-        return await self._transfers.update(uid, {
-            "status": status,
-            "finished_at": datetime.now(),
-            "current_name": None,
-        })
+        return await self._transfers.update(
+            uid,
+            {
+                "status": status,
+                "finished_at": datetime.now(),
+                "current_name": None,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Move / copy
@@ -257,7 +279,8 @@ class TransferService:
             failed_after = (await self._transfers.get(job_uid)).failed_items
             if failed_after == failed_before:
                 await self._media.soft_delete(
-                    source.uid, actor_user_id=actor_user_id,
+                    source.uid,
+                    actor_user_id=actor_user_id,
                 )
             return
 
@@ -329,7 +352,7 @@ class TransferService:
                 is_admin=is_admin,
             )
             await self._bump_done(job_uid, current_name=name)
-            for child in await self._media._files.list(  # noqa: SLF001
+            for child in await self._media._files.list(
                 parent_id=source.uid,
             ):
                 try:
@@ -342,10 +365,12 @@ class TransferService:
                         byte_copy=byte_copy,
                         is_admin=is_admin,
                     )
-                except Exception as error:  # noqa: BLE001
+                except Exception as error:
                     logger.exception("copy child failed: %s", child.uid)
                     await self._mark_item_failed(
-                        job_uid, _exception_message(error), name=child.name,
+                        job_uid,
+                        _exception_message(error),
+                        name=child.name,
                     )
             return created
 
@@ -383,7 +408,7 @@ class TransferService:
     async def _count_tree(self, root: MediaFileRecord) -> int:
         count = 1
         if root.type == "folder":
-            for child in await self._media._files.list(  # noqa: SLF001
+            for child in await self._media._files.list(
                 parent_id=root.uid,
             ):
                 count += await self._count_tree(child)
@@ -404,8 +429,8 @@ class TransferService:
             return False
         item_conn = source.provider_connection_id
         if not item_conn and source.type == "folder":
-            item_conn = await self._media._bound_connection(source.uid)  # noqa: SLF001
-        dest_conn = await self._media._bound_connection(dest_parent_id)  # noqa: SLF001
+            item_conn = await self._media._bound_connection(source.uid)
+        dest_conn = await self._media._bound_connection(dest_parent_id)
         if item_conn is None or dest_conn is None:
             return False
         return item_conn != dest_conn
@@ -418,15 +443,13 @@ class TransferService:
         conflict: str,
         actor_user_id: str,
     ) -> str | None:
-        siblings = await self._media._files.list(  # noqa: SLF001
+        siblings = await self._media._files.list(
             parent_id=dest_parent_id,
         )
         # Only names the actor can see matter for conflict UX; owned siblings
         # are enough for v1 (dest is always a writable folder of the actor).
         claimed = {
-            sibling.name
-            for sibling in siblings
-            if sibling.owner_id == actor_user_id
+            sibling.name for sibling in siblings if sibling.owner_id == actor_user_id
         }
         if name not in claimed:
             return name
@@ -435,14 +458,20 @@ class TransferService:
         return resolve_conflict_name(name, claimed)
 
     async def _bump_done(
-        self, job_uid: str, *, current_name: str | None = None,
+        self,
+        job_uid: str,
+        *,
+        current_name: str | None = None,
     ) -> None:
         current = await self._transfers.get(job_uid)
         assert current is not None  # noqa: S101
-        await self._transfers.update(job_uid, {
-            "done_items": current.done_items + 1,
-            "current_name": current_name,
-        })
+        await self._transfers.update(
+            job_uid,
+            {
+                "done_items": current.done_items + 1,
+                "current_name": current_name,
+            },
+        )
 
     async def _mark_item_failed(
         self,
@@ -453,9 +482,12 @@ class TransferService:
     ) -> None:
         current = await self._transfers.get(job_uid)
         assert current is not None  # noqa: S101
-        await self._transfers.update(job_uid, {
-            "failed_items": current.failed_items + 1,
-            "done_items": current.done_items + 1,
-            "current_name": name,
-            "error": _humanize_transfer_error(message),
-        })
+        await self._transfers.update(
+            job_uid,
+            {
+                "failed_items": current.failed_items + 1,
+                "done_items": current.done_items + 1,
+                "current_name": name,
+                "error": _humanize_transfer_error(message),
+            },
+        )

@@ -161,8 +161,8 @@ already speaks well, rather than hand-maintaining a bespoke async client.
   hot path for the most common case.
 - `rclone` — **one generic plugin process for every remaining Phase-1
   provider**, including S3: `s3`, `google_drive` (rclone's `drive` backend),
-  and mechanically onedrive/dropbox/webdav/nextcloud/ftp/sftp once it
-  exists, though only `s3` and `google_drive` are tested/shipped this phase.
+  `onedrive`, and `dropbox`; the rclone engine can also front
+  webdav/nextcloud/ftp/sftp, which remain unshipped.
   `apps/media`'s `s3_storage.py` (aioboto3) and `nextcloud_storage.py`
   bodies are kept as reference/fallback only, not shipped as separate
   plugins — the standalone `s3` plugin from the earlier draft of this doc is
@@ -181,34 +181,40 @@ already speaks well, rather than hand-maintaining a bespoke async client.
   connection config, translated to rclone's config keys) is generated
   on-the-fly per call, never written to disk.
 
-  **Google Drive OAuth — localhost-redirect paste flow (not a server
-  callback).** rclone rcd's own OAuth (`config/create`, `rclone authorize`)
+  **Cloud OAuth — localhost-redirect paste flow (not a server callback).**
+  rclone rcd's own OAuth (`config/create`, `rclone authorize`)
   assumes a browser on the same host as rclone and writes to rclone's
   on-disk config — backwards from our headless-server topology, and we
   never write credentials to rclone's config. Instead the core owns a
-  standard authorization-code flow that never needs Google to hit the
-  UMedia server:
+  provider-specific authorization-code flows that never need the provider
+  to hit the UMedia server:
 
-  1. `POST /providers/oauth/start` builds Google's authorize URL
-     (`access_type=offline`, `prompt=consent`, Drive scope) and stores a
+  1. `POST /providers/oauth/start` builds the selected provider's authorize
+     URL and stores a
      short-lived CSRF `state` in memory (`app.state.oauth_states`;
      single-container — multi-replica needs a shared store later).
-  2. The UI shows the URL (open popup / copy). The user signs in; Google
+  2. The UI shows the URL (open popup / copy). The user signs in; the provider
      redirects to the configured redirect URI (default `http://localhost`).
   3. The user pastes whatever landed in the browser — full redirect URL,
      query string, bare `code`, or a ready token JSON — into
      `POST /providers/oauth/complete`.
   4. The core validates `state` (skipped for token-JSON pastes), exchanges
-     the code at Google's token endpoint when needed, serializes the
+     the code at the provider token endpoint when needed, serializes the
      result into rclone's documented `token` JSON blob
      (`access_token`/`token_type`/`refresh_token`/`expiry` RFC3339), and
      creates the `ProviderConnection` with `token` + `client_id` +
-     `client_secret` (+ optional `root_folder_id`). The rclone plugin
-     consumes that config as-is via the inline connection string.
+     `client_secret`; OneDrive additionally resolves `/me/drive` and stores
+     `drive_id`/`drive_type`. The rclone plugin consumes that config as-is
+     via the inline connection string.
 
   Env: `UMEDIA_GOOGLE_OAUTH_CLIENT_ID` / `UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET`
   (aliases `GOOGLE_OAUTH_CLIENT_*`) and optional
   `UMEDIA_GOOGLE_OAUTH_REDIRECT_URI` (default `http://localhost`).
+  OneDrive and Dropbox use `UMEDIA_ONEDRIVE_OAUTH_CLIENT_ID` /
+  `UMEDIA_ONEDRIVE_OAUTH_CLIENT_SECRET` and
+  `UMEDIA_DROPBOX_OAUTH_CLIENT_ID` / `UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET`;
+  each has its own optional redirect URI, also defaulting to
+  `http://localhost`. The redirect URI must be registered with each app.
 - `telegram` — Telethon, ports `apps/api/providers/telegram.py`. Native:
   rclone has no Telegram backend.
 

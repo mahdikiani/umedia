@@ -81,4 +81,53 @@ describe("FileItemMenu transfers", () => {
     createSpy.mockRestore();
     clickSpy.mockRestore();
   });
+
+  it("offers move and copy to the other pane when that pane is available", async () => {
+    const onMoveToOtherSide = vi.fn();
+    const onCopyToOtherSide = vi.fn();
+
+    render(
+      <FileItemMenu
+        item={item}
+        onAddToTemporary={vi.fn()}
+        onCopy={vi.fn()}
+        onCopyToOtherSide={onCopyToOtherSide}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+        onMoveToOtherSide={onMoveToOtherSide}
+        onRename={vi.fn()}
+        onShare={vi.fn()}
+        otherSideParentId="folder-destination"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Actions for report/ }));
+    fireEvent.click(await screen.findByText("Move to other side"));
+    expect(onMoveToOtherSide).toHaveBeenCalledWith(item);
+
+    fireEvent.click(screen.getByRole("button", { name: /Actions for report/ }));
+    fireEvent.click(await screen.findByText("Copy to other side"));
+    expect(onCopyToOtherSide).toHaveBeenCalledWith(item);
+  });
+
+  it("disables move when both panes show the same folder", async () => {
+    render(
+      <FileItemMenu
+        item={item}
+        onAddToTemporary={vi.fn()}
+        onCopy={vi.fn()}
+        onCopyToOtherSide={vi.fn()}
+        onDelete={vi.fn()}
+        onMove={vi.fn()}
+        onMoveToOtherSide={vi.fn()}
+        onRename={vi.fn()}
+        onShare={vi.fn()}
+        otherSideParentId={null}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Actions for report/ }));
+    expect(await screen.findByText("Move to other side")).toHaveAttribute("data-disabled");
+    expect(screen.getByText("Copy to other side")).toBeEnabled();
+  });
 });
