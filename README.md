@@ -33,7 +33,7 @@ docker compose -f compose.release.yaml pull
 docker compose -f compose.release.yaml up -d
 ```
 
-Open <http://localhost:8080>. The sample uses local storage and keeps the database and files in `./volumes/`. Change `UMEDIA_MASTER_KEY` in `.env` before storing real data, and keep a backup of both that key and the volume. Optional cloud-provider credentials and public-domain setup are covered in [Getting Started](https://mahdikiani.github.io/umedia/getting-started/). To use a different release, set `UMEDIA_VERSION` in `.env` to its version tag.
+Open <http://localhost:8080>. The sample uses local storage and Docker-managed volumes to keep the database and files. Change `UMEDIA_MASTER_KEY` in `.env` before storing real data, and keep a backup of both that key and the volumes. Optional cloud-provider credentials and public-domain setup are covered in [Getting Started](https://mahdikiani.github.io/umedia/getting-started/). To use a different release, set `UMEDIA_VERSION` in `.env` to its version tag.
 
 ## Support and contributions
 

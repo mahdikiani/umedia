@@ -20,8 +20,8 @@ services:
       UMEDIA_ONEDRIVE_OAUTH_REDIRECT_URI: ${UMEDIA_ONEDRIVE_OAUTH_REDIRECT_URI:-http://localhost}
       UMEDIA_DROPBOX_OAUTH_REDIRECT_URI: ${UMEDIA_DROPBOX_OAUTH_REDIRECT_URI:-http://localhost}
     volumes:
-      - ./volumes/data:/data
-      - ./volumes/storage:/storage
+      - umedia-data:/data
+      - umedia-storage:/storage
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
@@ -51,3 +51,7 @@ services:
       - "${UMEDIA_HTTP_PORT:-8080}:80"
     volumes:
       - ./Caddyfile.release:/etc/caddy/Caddyfile:ro
+
+volumes:
+  umedia-data:
+  umedia-storage:
