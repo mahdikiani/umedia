@@ -3,13 +3,13 @@ import "@testing-library/jest-dom/vitest";
 import {
   cleanup,
   fireEvent,
-  render,
   screen,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TemporaryDock } from "@/components/temporary-dock";
+import { renderWithLocale as render } from "@/tests/render-with-locale";
 import {
   UMEDIA_FILE_IDS_MIME,
   UMEDIA_FROM_TEMPORARY_MIME,
@@ -104,7 +104,8 @@ describe("TemporaryDock", () => {
     expect(
       screen.getByText(/Pointer clipboard for moves and copies/i),
     ).toBeInTheDocument();
-    expect(screen.getByText("pointer clipboard")).toBeInTheDocument();
+    expect(screen.getByText("Pointer clipboard")).toBeInTheDocument();
+    expect(screen.getByText(/drag and drop items into this panel/i)).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: /Collapse Temporary/i }),

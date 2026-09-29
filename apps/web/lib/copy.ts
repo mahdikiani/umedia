@@ -31,6 +31,9 @@ export const copy = {
     markAsRead: "Mark as read",
     notificationsLoadFailed: "Could not load notifications.",
     viewNotifications: "View notifications",
+    temporarySubtitle: "Pointer clipboard",
+    temporaryInstructions:
+      "Pointer clipboard for moves and copies. Use ⋮ → Add to Temporary, then Paste here, or drag and drop items into this panel.",
     expandFolder: "Expand",
     collapseFolder: "Collapse",
     navHome: "Home",
@@ -118,6 +121,9 @@ export const copy = {
     markAsRead: "خوانده شد",
     notificationsLoadFailed: "بارگذاری اعلان‌ها انجام نشد.",
     viewNotifications: "دیدن اعلان‌ها",
+    temporarySubtitle: "کلیپ‌بورد موقت",
+    temporaryInstructions:
+      "کلیپ‌بورد موقت برای جابه‌جایی و کپی است. از ⋮ گزینهٔ افزودن به موقت را بزنید و اینجا جای‌گذاری کنید، یا فایل‌ها را بکشید و در این پنل رها کنید.",
     expandFolder: "بازکردن",
     collapseFolder: "بستن",
     navHome: "خانه",

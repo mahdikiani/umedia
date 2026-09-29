@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import FilesPage from "@/app/(dashboard)/files/page";
+import { renderWithLocale as render } from "@/tests/render-with-locale";
 
 const mockSearchParams = new URLSearchParams();
 const mockRouter = { push: vi.fn(), replace: vi.fn() };

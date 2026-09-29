@@ -5,6 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { useLocale } from "@/components/locale-provider";
+import { useCopy } from "@/lib/copy";
 import {
   clearTemporary,
   createTransfer,
@@ -36,6 +38,8 @@ export function TemporaryDock({
   currentParentId,
   addToTemporary,
 }: TemporaryDockProps) {
+  const { locale } = useLocale();
+  const text = useCopy(locale);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(COLLAPSED_KEY) === "1";
@@ -207,7 +211,7 @@ export function TemporaryDock({
           </div>
           {!collapsed ? (
             <p className="ps-6 text-[11px] text-muted-foreground">
-              pointer clipboard
+              {text.temporarySubtitle}
             </p>
           ) : null}
         </div>
@@ -227,8 +231,7 @@ export function TemporaryDock({
             <p className="px-1 py-3 text-xs text-muted-foreground">Loading…</p>
           ) : items.length === 0 ? (
             <p className="px-1 py-3 text-xs text-muted-foreground">
-              Pointer clipboard for moves and copies. Use ⋮ → Add to Temporary,
-              then Paste here.
+              {text.temporaryInstructions}
             </p>
           ) : (
             <>

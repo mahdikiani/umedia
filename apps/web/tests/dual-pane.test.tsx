@@ -3,7 +3,6 @@ import "@testing-library/jest-dom/vitest";
 import {
   cleanup,
   fireEvent,
-  render,
   screen,
   waitFor,
   within,
@@ -11,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import FilesPage from "@/app/(dashboard)/files/page";
+import { renderWithLocale as render } from "@/tests/render-with-locale";
 import { UMEDIA_FILE_IDS_MIME } from "@/lib/umedia-dnd";
 
 const mockSearchParams = new URLSearchParams();
