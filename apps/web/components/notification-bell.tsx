@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 
 import { useLocale } from "@/components/locale-provider";
+import { NotificationFilterTabs } from "@/components/notification-filter-tabs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { listNotifications, type OperationNotification } from "@/lib/api";
 import { useCopy } from "@/lib/copy";
+import { filterNotifications, type NotificationFilter } from "@/lib/notification-filter";
 
 function operationLabel(operation: string, text: ReturnType<typeof useCopy>) {
   if (operation === "upload") return text.operationUpload;
@@ -26,6 +28,7 @@ export function NotificationBell() {
   const text = useCopy(locale);
   const [notifications, setNotifications] = useState<OperationNotification[]>([]);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [filter, setFilter] = useState<NotificationFilter>("unread");
 
   const refresh = useCallback(async () => {
     try {
@@ -46,6 +49,12 @@ export function NotificationBell() {
   }, [refresh]);
 
   const unreadCount = notifications.filter((notification) => !notification.read_at).length;
+  const visibleNotifications = filterNotifications(notifications, filter);
+  const emptyMessage = filter === "unread"
+    ? text.notificationsUnreadEmpty
+    : filter === "read"
+      ? text.notificationsReadEmpty
+      : text.notificationsEmpty;
 
   return (
     <DropdownMenu onOpenChange={(open) => { if (open) void refresh(); }}>
@@ -66,13 +75,14 @@ export function NotificationBell() {
         <div className="border-b px-3 py-2.5">
           <p className="text-sm font-semibold">{text.notificationsTitle}</p>
         </div>
-        {loadFailed ? (
-          <p className="px-3 py-5 text-center text-sm text-destructive">{text.notificationsLoadFailed}</p>
-        ) : notifications.length === 0 ? (
-          <p className="px-3 py-5 text-center text-sm text-muted-foreground">{text.notificationsEmpty}</p>
-        ) : (
-          <div className="max-h-80 overflow-y-auto">
-            {notifications.slice(0, 8).map((notification) => (
+        <NotificationFilterTabs onValueChange={setFilter} value={filter}>
+          {loadFailed ? (
+            <p className="px-3 py-5 text-center text-sm text-destructive">{text.notificationsLoadFailed}</p>
+          ) : visibleNotifications.length === 0 ? (
+            <p className="px-3 py-5 text-center text-sm text-muted-foreground">{emptyMessage}</p>
+          ) : (
+            <div className="max-h-80 overflow-y-auto">
+            {visibleNotifications.slice(0, 8).map((notification) => (
               <Link
                 className="block border-b px-3 py-2.5 transition-colors last:border-0 hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
                 href="/notifications"
@@ -92,8 +102,9 @@ export function NotificationBell() {
                 </div>
               </Link>
             ))}
-          </div>
-        )}
+            </div>
+          )}
+        </NotificationFilterTabs>
         <Link
           className="block border-t px-3 py-2.5 text-center text-sm font-medium text-primary hover:bg-accent"
           href="/notifications"
