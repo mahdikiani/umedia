@@ -24,8 +24,8 @@ RUN apt-get update \
 
 RUN addgroup --system --gid 1000 user \
     && adduser  --system --uid 1000 --ingroup user --disabled-password --gecos '' --home /home/user user \
-    && mkdir -p /app/logs /data /run/umedia/plugins \
-    && chown -R user:user /app/logs /data /run/umedia
+    && mkdir -p /app/logs /data /storage /run/umedia/plugins \
+    && chown -R user:user /app/logs /data /storage /run/umedia
 # /data: named volume mounts inherit an image directory's ownership on
 # first creation, so this must exist (owned by `user`) before the volume
 # attaches -- otherwise it mounts root:root and the app (deliberately
