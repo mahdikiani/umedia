@@ -50,6 +50,20 @@
   --storage-nextcloud-fg: oklch(0.42 0.1 155);
   --storage-unknown-bg: oklch(0.94 0 0);
   --storage-unknown-fg: oklch(0.5 0 0);
+  --landing-canvas: oklch(0.975 0.009 145);
+  --landing-text: oklch(0.19 0.025 255);
+  --landing-muted: oklch(0.49 0.022 255);
+  --landing-panel: oklch(1 0 0);
+  --landing-line: oklch(0.89 0.018 150);
+  --landing-accent: oklch(0.49 0.13 153);
+  --landing-accent-strong: oklch(0.39 0.12 153);
+  --landing-accent-soft: oklch(0.93 0.045 153);
+  --landing-glow: oklch(0.78 0.12 152 / 0.34);
+  --landing-shadow: oklch(0.3 0.03 255 / 0.12);
+  --landing-contrast: oklch(0.22 0.04 257);
+  --landing-contrast-text: oklch(0.97 0.009 145);
+  --landing-rim: oklch(1 0 0 / 0.68);
+  --landing-action-text: oklch(0.99 0.005 145);
 }
 
 * {
@@ -154,6 +168,20 @@ button {
   --storage-nextcloud-fg: oklch(0.8 0.08 155);
   --storage-unknown-bg: oklch(0.28 0 0);
   --storage-unknown-fg: oklch(0.72 0 0);
+  --landing-canvas: oklch(0.17 0.018 255);
+  --landing-text: oklch(0.96 0.009 145);
+  --landing-muted: oklch(0.73 0.015 255);
+  --landing-panel: oklch(0.22 0.02 255);
+  --landing-line: oklch(1 0 0 / 0.12);
+  --landing-accent: oklch(0.78 0.12 152);
+  --landing-accent-strong: oklch(0.86 0.11 152);
+  --landing-accent-soft: oklch(0.3 0.045 153);
+  --landing-glow: oklch(0.62 0.1 152 / 0.18);
+  --landing-shadow: oklch(0 0 0 / 0.34);
+  --landing-contrast: oklch(0.11 0.02 257);
+  --landing-contrast-text: oklch(0.97 0.009 145);
+  --landing-rim: oklch(1 0 0 / 0.12);
+  --landing-action-text: oklch(0.2 0.025 255);
 }
 
 @layer base {
