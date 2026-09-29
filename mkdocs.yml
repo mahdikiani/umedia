@@ -1,0 +1,85 @@
+site_name: UMedia
+site_description: A self-hosted media library for files spread across storage providers.
+site_url: https://mahdikiani.github.io/umedia/
+repo_url: https://github.com/mahdikiani/umedia
+repo_name: mahdikiani/umedia
+edit_uri: edit/main/docs/public/
+docs_dir: docs/public
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  logo: assets/mark.svg
+  favicon: assets/mark.svg
+  font: false
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: cyan
+      media: "(prefers-color-scheme: light)"
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: cyan
+      media: "(prefers-color-scheme: dark)"
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.action.edit
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/mahdikiani/umedia
+      name: UMedia on GitHub
+    - icon: fontawesome/solid/envelope
+      link: mailto:mahdikiany@gmail.com
+      name: Email Mahdi
+    - icon: fontawesome/brands/telegram
+      link: https://t.me/mahdikiani
+      name: Telegram @mahdikiani
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/user/mahdikiani/
+      name: Mahdi on PyPI
+
+copyright: Copyright &copy; 2026 Mahdi Kiani
+
+nav:
+  - Home: index.md
+  - Product:
+      - Overview: product.md
+      - Providers and status: providers.md
+      - Roadmap and limitations: roadmap.md
+  - Self-hosting: getting-started.md
+  - Project:
+      - Security: security.md
+      - Contributing: contributing.md
+      - Support and funding: support.md
+      - About the maintainer: maintainer.md
