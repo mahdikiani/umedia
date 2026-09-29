@@ -1,19 +1,16 @@
-"""Unit tests for `apps.resources.uploads`' own expired-upload sweep --
-see that module's `_cleanup_expired_uploads` docstring for why this reads
-the on-disk `.info` shape directly instead of depending on
-`tuspyserver.file.gc_files` (documented in its README but not actually
-present in the installed source -- confirmed before writing this)."""
-
 import json
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
 
-from apps.resources.uploads import _cleanup_expired_uploads, _parse_expires
+from apps.media_files.uploads import _cleanup_expired_uploads, _parse_expires
 
 
 def _write_upload(
-    upload_dir: Path, uid: str, *, expires: str | float | None,
+    upload_dir: Path,
+    uid: str,
+    *,
+    expires: str | float | None,
 ) -> None:
     (upload_dir / uid).write_bytes(b"partial content")
     info = {"metadata": {}, "size": 100, "offset": 16, "created_at": "x"}
@@ -32,9 +29,23 @@ def test_parse_expires_returns_none_for_garbage() -> None:
     assert _parse_expires("not a date") is None
 
 
+def test_parse_expires_returns_none_for_out_of_range_timestamp() -> None:
+    assert _parse_expires(float("inf")) is None
+
+
+def test_cleanup_keeps_upload_with_invalid_expiry(tmp_path: Path) -> None:
+    _write_upload(tmp_path, "invalid-expiry", expires="not a date")
+
+    _cleanup_expired_uploads(tmp_path)
+
+    assert (tmp_path / "invalid-expiry").exists()
+    assert (tmp_path / "invalid-expiry.info").exists()
+
+
 def test_cleanup_removes_expired_uploads(tmp_path: Path) -> None:
     expired_at = format_datetime(
-        datetime.now(UTC) - timedelta(days=1), usegmt=True,
+        datetime.now(UTC) - timedelta(days=1),
+        usegmt=True,
     )
     _write_upload(tmp_path, "expired-upload", expires=expired_at)
 

@@ -113,3 +113,14 @@ python_version = "3.13"
 ignore_missing_imports = true
 check_untyped_defs = false
 disallow_untyped_defs = false
+
+[tool.coverage.run]
+omit = [
+    "apps/files/*",
+    "apps/resources/routes.py",
+    "apps/resources/api_schemas.py",
+    "apps/resources/uploads.py",
+    "apps/resources/factory.py",
+    "server/worker.py",
+    "utils/imagetools.py",
+]

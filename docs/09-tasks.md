@@ -37,14 +37,15 @@ relayed back here.
 - [x] P1.8: `utils/crypto.py` (credential encryption) ported from `apps/api`
 - [x] P1.9: Alembic set up in `apps/media` (pattern ported from `apps/api`; single `0001_provider_connections` migration so far, verified with a real `alembic upgrade head` run; `docker-entrypoint.sh` now runs it before `main.py` starts)
 
-Note: `apps/files` (the old Beanie-based MediaFile browsing/upload code) is
-deliberately left unwired (`server/server.py` doesn't mount its router) and
-its now-orphaned tests are skipped via `conftest.py`'s `collect_ignore` --
-it still exists on disk, untouched, waiting for the Phase 4 SQL rewrite.
-The test coverage gate (`--cov-fail-under=75` in `pytest.ini`) is
-consequently red right now (~33%, all of it new code) since `apps/files`
-counts toward the denominator uncovered -- expected and will climb through
-Phases 3-4 as that code is replaced, not something to chase down mid-phase.
+`apps/files` (the old Beanie-based browsing/upload implementation) is
+deliberately unmounted and its obsolete tests are skipped by
+`conftest.py`. The same is true of the retired `/resources` HTTP surface;
+the MediaFile/StorageObject implementation is mounted instead. Coverage
+therefore excludes only those superseded modules, plus the unused legacy
+image helper and worker, while still running and measuring the retained
+`apps/resources` service/repository tests. The CI gate is 80% for the
+maintained backend code; upload lifecycle tests exercise the active MediaFile
+tus route.
 
 ## Phase 2 — Plugin runtime ✅ done
 
