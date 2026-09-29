@@ -20,16 +20,20 @@ UMedia brings local storage, S3-compatible object stores, and selected cloud and
 
 Full-text search, an operating-system WebDAV mount, and AI organization are not available yet. See the [current limitations](https://mahdikiani.github.io/umedia/roadmap/).
 
-## Run it
+## Quick start with Docker images
 
-The checked-in `compose.yaml` is configured for an existing Traefik deployment. It expects an external Docker network named `traefik-net`, a running Traefik instance attached to that network, and host routing configured for `drive.uln.me`. This is not a standalone local Compose setup.
+Download the sample environment and Compose file, then start the published images:
 
 ```bash
-docker network create traefik-net
-docker compose up --build -d
+curl -fsSLO https://raw.githubusercontent.com/mahdikiani/umedia/main/.env.docker.example
+mv .env.docker.example .env
+curl -fsSLO https://raw.githubusercontent.com/mahdikiani/umedia/main/compose.release.yaml
+curl -fsSLO https://raw.githubusercontent.com/mahdikiani/umedia/main/Caddyfile.release
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
 ```
 
-Before using another hostname, update the Traefik `Host(...)` rules in `compose.yaml` and configure the matching DNS and TLS routing. Provider OAuth credentials and Telegram application credentials must be passed into the API container; see [Getting Started](https://mahdikiani.github.io/umedia/getting-started/).
+Open <http://localhost:8080>. The sample uses local storage and keeps the database and files in `./volumes/`. Change `UMEDIA_MASTER_KEY` in `.env` before storing real data, and keep a backup of both that key and the volume. Optional cloud-provider credentials and public-domain setup are covered in [Getting Started](https://mahdikiani.github.io/umedia/getting-started/). To use a different release, set `UMEDIA_VERSION` in `.env` to its version tag.
 
 ## Support and contributions
 
