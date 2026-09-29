@@ -1,0 +1,53 @@
+name: umedia
+
+services:
+  media:
+    image: ghcr.io/mahdikiani/umedia-media:${UMEDIA_VERSION:-0.1.0}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
+      UMEDIA_DATA_DIR: /data
+      UMEDIA_MASTER_KEY: ${UMEDIA_MASTER_KEY:?Set UMEDIA_MASTER_KEY in .env}
+      UMEDIA_LOCAL_STORAGE_ROOT: /storage
+      UMEDIA_SYNC_POLL_INTERVAL_SECONDS: ${UMEDIA_SYNC_POLL_INTERVAL_SECONDS:-900}
+      UMEDIA_GOOGLE_OAUTH_CLIENT_ID: ${UMEDIA_GOOGLE_OAUTH_CLIENT_ID:-}
+      UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET: ${UMEDIA_GOOGLE_OAUTH_CLIENT_SECRET:-}
+      UMEDIA_ONEDRIVE_OAUTH_CLIENT_ID: ${UMEDIA_ONEDRIVE_OAUTH_CLIENT_ID:-}
+      UMEDIA_ONEDRIVE_OAUTH_CLIENT_SECRET: ${UMEDIA_ONEDRIVE_OAUTH_CLIENT_SECRET:-}
+      UMEDIA_DROPBOX_OAUTH_CLIENT_ID: ${UMEDIA_DROPBOX_OAUTH_CLIENT_ID:-}
+      UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET: ${UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET:-}
+      UMEDIA_GOOGLE_OAUTH_REDIRECT_URI: ${UMEDIA_GOOGLE_OAUTH_REDIRECT_URI:-http://localhost}
+      UMEDIA_ONEDRIVE_OAUTH_REDIRECT_URI: ${UMEDIA_ONEDRIVE_OAUTH_REDIRECT_URI:-http://localhost}
+      UMEDIA_DROPBOX_OAUTH_REDIRECT_URI: ${UMEDIA_DROPBOX_OAUTH_REDIRECT_URI:-http://localhost}
+    volumes:
+      - ./volumes/data:/data
+      - ./volumes/storage:/storage
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    image: ghcr.io/mahdikiani/umedia-web:${UMEDIA_VERSION:-0.1.0}
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, node, -e, "require('http').get('http://localhost:3000/login', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      media:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    ports:
+      - "${UMEDIA_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile.release:/etc/caddy/Caddyfile:ro

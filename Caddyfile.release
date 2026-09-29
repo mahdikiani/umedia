@@ -1,0 +1,12 @@
+:80 {
+	@api path /api/v1/*
+	reverse_proxy @api media:8000
+
+	@storage_api path /api/v1
+	reverse_proxy @storage_api media:8000
+
+	@aws_authorization header_regexp Authorization ^AWS
+	reverse_proxy @aws_authorization media:8000
+
+	reverse_proxy web:3000
+}
