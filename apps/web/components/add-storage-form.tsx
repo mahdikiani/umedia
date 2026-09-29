@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { LockKeyhole } from "lucide-react";
 
 import { OAuthProviderForm } from "@/components/google-drive-oauth-form";
+import { TelegramLoginForm } from "@/components/telegram-login-form";
 import { StorageProviderIcon } from "@/components/storage-provider-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,25 +71,42 @@ export function AddStorageForm({
   if (!selected) {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        {providerTypes.map((provider) => (
-          <button
-            className="rounded-xl border p-4 text-left transition hover:bg-muted"
-            key={provider.id}
-            onClick={() => setSelectedId(provider.id)}
-            type="button"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <StorageProviderIcon providerType={provider.id} size="md" />
-              <Badge variant={statusVariant[provider.status] ?? "secondary"}>
-                {provider.status}
-              </Badge>
-            </div>
-            <h3 className="mt-4 text-sm font-semibold">{provider.name}</h3>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {provider.description}
-            </p>
-          </button>
-        ))}
+        {providerTypes.map((provider) => {
+          const unavailable = provider.available === false;
+          return (
+            <button
+              aria-label={
+                unavailable
+                  ? `${provider.name} unavailable: ${provider.unavailable_reason ?? "Not configured"}`
+                  : undefined
+              }
+              className="rounded-xl border p-4 text-left transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
+              disabled={unavailable}
+              key={provider.id}
+              onClick={() => setSelectedId(provider.id)}
+              type="button"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <StorageProviderIcon providerType={provider.id} size="md" />
+                <div className="flex items-center gap-2">
+                  {unavailable ? <LockKeyhole aria-hidden="true" size={14} /> : null}
+                  <Badge variant={statusVariant[provider.status] ?? "secondary"}>
+                    {unavailable ? "Locked" : provider.status}
+                  </Badge>
+                </div>
+              </div>
+              <h3 className="mt-4 text-sm font-semibold">{provider.name}</h3>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {provider.description}
+              </p>
+              {unavailable && provider.unavailable_reason ? (
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {provider.unavailable_reason}
+                </p>
+              ) : null}
+            </button>
+          );
+        })}
       </div>
     );
   }
@@ -95,6 +114,17 @@ export function AddStorageForm({
   if (selected.connect_flow === "oauth") {
     return (
       <OAuthProviderForm
+        onBack={() => setSelectedId(null)}
+        onCancel={onCancel}
+        onCreated={onCreated}
+        provider={selected}
+      />
+    );
+  }
+
+  if (selected.connect_flow === "session") {
+    return (
+      <TelegramLoginForm
         onBack={() => setSelectedId(null)}
         onCancel={onCancel}
         onCreated={onCreated}

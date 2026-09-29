@@ -1,8 +1,9 @@
 """Async Alembic environment.
 
 Only tracks this app's own tables (`ProviderConnection`, `Resource`,
-`StorageObject`, `MediaFile`, `MediaFileObject`, `InstanceSettings`). usso.lite manages its
-own tables separately via `LiteDatabase.init_db()` (`create_all`, not
+`StorageObject`, `MediaFile`, `MediaFileObject`, `InstanceSettings`,
+`OperationNotification`). usso.lite manages its own tables separately via
+`LiteDatabase.init_db()` (`create_all`, not
 migrations) -- see `apps/auth/services.py` -- so they are deliberately
 not part of this metadata.
 """
@@ -21,6 +22,7 @@ from apps.media_files.models import (
     MediaFile,
     MediaFileObject,
     MediaFileStar,
+    OperationNotification,
 )
 from apps.provider_connections.models import ProviderConnection
 from apps.resources.models import Resource
@@ -33,6 +35,7 @@ __all__ = [
     "MediaFile",
     "MediaFileObject",
     "MediaFileStar",
+    "OperationNotification",
     "ProviderConnection",
     "Resource",
     "StorageObject",

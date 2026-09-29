@@ -24,6 +24,7 @@ from apps.auth.middleware import jwt_guard
 from apps.auth.routes import router as auth_router
 from apps.auth.services import AuthService
 from apps.auth.user_routes import router as users_router
+from apps.media_files.notification_routes import router as notifications_router
 from apps.media_files.routes import provider_index_router
 from apps.media_files.routes import public_router as media_files_public_router
 from apps.media_files.routes import router as media_files_router
@@ -32,6 +33,7 @@ from apps.media_files.uploads import build_upload_router, run_periodic_cleanup
 from apps.media_files.worker import poll_inbound_syncs, purge_expired_trash
 from apps.provider_connections.oauth import OAuthStateStore
 from apps.provider_connections.routes import router as provider_connections_router
+from apps.provider_connections.telegram_login import TelegramLoginService
 from apps.s3.routes import register_s3_exception_handler
 from apps.s3.routes import root_router as s3_root_router
 from apps.s3.routes import router as s3_router
@@ -74,7 +76,9 @@ async def _start_plugins(
             continue
         try:
             await process_manager.start(
-                process_key, entrypoint, env=_plugin_env(process_key, settings),
+                process_key,
+                entrypoint,
+                env=_plugin_env(process_key, settings),
             )
         except PluginStartError:
             logging.exception("Plugin '%s' failed to start", process_key)
@@ -133,6 +137,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await _start_plugins(plugin_registry, plugin_process_manager, settings)
     app.state.plugin_registry = plugin_registry
     app.state.plugin_process_manager = plugin_process_manager
+    app.state.telegram_login_service = TelegramLoginService(
+        plugin_process_manager,
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+    )
 
     tus_cleanup_task = asyncio.create_task(
         run_periodic_cleanup(settings.tus_upload_dir),
@@ -184,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             _done, pending = await asyncio.wait(background_tasks, timeout=10.0)
             for task in pending:
                 task.cancel()
+        await app.state.telegram_login_service.shutdown()
         await plugin_process_manager.stop_all()
         await auth_service.dispose()
         await engine.dispose()
@@ -227,6 +237,7 @@ server_router.include_router(users_router)
 server_router.include_router(access_keys_router)
 server_router.include_router(provider_connections_router)
 server_router.include_router(media_files_router)
+server_router.include_router(notifications_router)
 server_router.include_router(media_files_public_router)
 server_router.include_router(settings_router)
 server_router.include_router(s3_router, prefix="/s3")

@@ -26,7 +26,10 @@ from tuspyserver import create_tus_router
 
 from apps.provider_connections.repository import ProviderConnectionRepository
 
-from .factory import build_media_file_service_from_state
+from .factory import (
+    build_media_file_service_from_state,
+    build_notification_service_from_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +103,18 @@ async def _finalize(
             owner_id=owner_id,
             is_admin=is_admin,
         )
-    except Exception:
+    except Exception as error:
+        try:
+            await build_notification_service_from_state(app.state).record_failure(
+                owner_id=owner_id,
+                operation="upload",
+                item_name=metadata.get("name") or path.name,
+                error=str(error),
+                source_type="tus_upload",
+                source_uid=path.stem,
+            )
+        except Exception:
+            logger.exception("Could not persist failed tus upload notification")
         logger.exception("Finalizing tus upload '%s' failed", file_path)
     finally:
         await asyncio.to_thread(path.unlink, missing_ok=True)

@@ -69,7 +69,7 @@ import {
   dataTransferHasLibraryIds,
   parseLibraryDragPayload,
   setLibraryDragPayload,
-  transferOperationFromEvent,
+  transferOperationForStorage,
 } from "@/lib/umedia-dnd";
 import { cn } from "@/lib/utils";
 
@@ -290,11 +290,16 @@ export function FileBrowserPane({
 
   async function handleLibraryDrop(
     sourceIds: string[],
+    sourceConnectionIds: (string | null)[] | undefined,
     destParentId: string | null,
-    operation: "move" | "copy",
+    destinationConnectionId: string | null | undefined,
     fromTemporary = false,
   ) {
     if (sourceIds.includes(destParentId ?? "")) return;
+    const operation = transferOperationForStorage(
+      sourceConnectionIds,
+      destinationConnectionId,
+    );
     try {
       const job = await createTransfer({
         operation,
@@ -320,7 +325,10 @@ export function FileBrowserPane({
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect =
-      transferOperationFromEvent(event) === "copy" ? "copy" : "move";
+      transferOperationForStorage(
+        parseLibraryDragPayload(event.dataTransfer)?.sourceConnectionIds,
+        parentId ? crumbs.at(-1)?.connectionId : null,
+      );
     setDropActive(true);
   }
 
@@ -339,13 +347,18 @@ export function FileBrowserPane({
     if (!payload || payload.sourceIds.length === 0) return;
     void handleLibraryDrop(
       payload.sourceIds,
+      payload.sourceConnectionIds,
       parentId,
-      transferOperationFromEvent(event, payload),
+      parentId ? crumbs.at(-1)?.connectionId : null,
       Boolean(payload.fromTemporary),
     );
   }
 
-  function onFolderDrop(event: React.DragEvent, folderUid: string) {
+  function onFolderDrop(
+    event: React.DragEvent,
+    folderUid: string,
+    folderConnectionId: string | null,
+  ) {
     if (!dataTransferHasLibraryIds(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -355,8 +368,9 @@ export function FileBrowserPane({
     if (!payload || payload.sourceIds.length === 0) return;
     void handleLibraryDrop(
       payload.sourceIds,
+      payload.sourceConnectionIds,
       folderUid,
-      transferOperationFromEvent(event, payload),
+      folderConnectionId,
       Boolean(payload.fromTemporary),
     );
   }
@@ -393,7 +407,9 @@ export function FileBrowserPane({
     return {
       draggable: true as const,
       onDragStart: (event: React.DragEvent) => {
-        setLibraryDragPayload(event.dataTransfer, [item.uid]);
+        setLibraryDragPayload(event.dataTransfer, [item.uid], {
+          sourceConnectionIds: [item.provider_connection_id],
+        });
       },
     };
   }
@@ -418,8 +434,12 @@ export function FileBrowserPane({
         if (!dataTransferHasLibraryIds(event.dataTransfer)) return;
         event.preventDefault();
         event.stopPropagation();
+        const folder = items.find((item) => item.uid === folderUid);
         event.dataTransfer.dropEffect =
-          transferOperationFromEvent(event) === "copy" ? "copy" : "move";
+          transferOperationForStorage(
+            parseLibraryDragPayload(event.dataTransfer)?.sourceConnectionIds,
+            folder?.provider_connection_id,
+          );
         setFolderDropUid(folderUid);
         setDropActive(false);
       },
@@ -429,7 +449,10 @@ export function FileBrowserPane({
         if (related && event.currentTarget.contains(related)) return;
         setFolderDropUid((current) => (current === folderUid ? null : current));
       },
-      onDrop: (event: React.DragEvent) => onFolderDrop(event, folderUid),
+      onDrop: (event: React.DragEvent) => {
+        const folder = items.find((item) => item.uid === folderUid);
+        onFolderDrop(event, folderUid, folder?.provider_connection_id ?? null);
+      },
     };
   }
 
@@ -521,11 +544,11 @@ export function FileBrowserPane({
                   return (
                     <TableHead
                       aria-sort={state}
-                      className="px-1"
+                      className={column.key === "name" ? "px-4" : "px-1"}
                       key={column.key}
                     >
                       <Button
-                        className="-ms-1 min-w-0 px-0.5 text-xs font-medium"
+                        className="min-w-0 px-0.5 text-xs font-medium"
                         disabled={!onSortChange}
                         onClick={() => cycleSort(column.key)}
                         size="sm"
@@ -542,7 +565,7 @@ export function FileBrowserPane({
                     </TableHead>
                   );
                 })}
-                <TableHead className="w-[10%] px-1" />
+                <TableHead className="w-[10%] px-4" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -582,7 +605,7 @@ export function FileBrowserPane({
                       data-drop-folder={isFolder ? item.uid : undefined}
                       key={item.uid}
                     >
-                      <TableCell className="min-w-0" {...dropProps}>
+                      <TableCell className="min-w-0 px-4" {...dropProps}>
                         <div
                           className="flex min-w-0 items-center gap-2"
                           {...itemDragProps(item)}
@@ -730,7 +753,7 @@ export function FileBrowserPane({
                       >
                         {new Date(item.updated_at).toLocaleDateString()}
                       </TableCell>
-                      <TableCell className="px-1" {...dropProps}>
+                      <TableCell className="px-4 text-end" {...dropProps}>
                         <FileItemMenu
                           item={item}
                           onAddToTemporary={onAddToTemporary}

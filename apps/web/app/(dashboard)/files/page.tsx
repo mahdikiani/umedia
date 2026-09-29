@@ -56,6 +56,7 @@ import {
   addToTemporary as addTemporaryPointers,
   api,
   apiForm,
+  cancelTransfer,
   createTransfer,
   LIST_PAGE_SIZE,
   type MediaFileItem,
@@ -572,6 +573,16 @@ function FilesBrowser() {
     trackTransfer(job);
   }
 
+  async function onTransferCancel(uid: string) {
+    try {
+      trackTransfer(await cancelTransfer(uid));
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not cancel transfer.",
+      );
+    }
+  }
+
   async function transferToOtherSide(
     item: MediaFileItem,
     operation: "move" | "copy",
@@ -810,7 +821,11 @@ function FilesBrowser() {
         </div>
       )}
 
-      <TransferProgressPanel jobs={transferJobs} onDismiss={dismissTransfer} />
+      <TransferProgressPanel
+        jobs={transferJobs}
+        onCancel={(uid) => void onTransferCancel(uid)}
+        onDismiss={dismissTransfer}
+      />
 
       <div
         className={

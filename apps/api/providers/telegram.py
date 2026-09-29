@@ -2,34 +2,30 @@
 
 from typing import Any
 
-from telethon import TelegramClient
-from telethon.sessions import StringSession
+from pyrogram import Client
+from pyrogram.enums import ChatMemberStatus
 
 
 class TelegramStorageProvider:
-    """Validate an encrypted Telethon session and target channel."""
+    """Validate a Kurigram session string and target channel."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._config = config
 
     async def test_connection(self) -> None:
         """Connect with MTProto and verify channel access."""
-        client = TelegramClient(
-            StringSession(str(self._config["session"])),
-            int(self._config["api_id"]),
-            str(self._config["api_hash"]),
-        )
-        try:
-            await client.connect()
-            if not await client.is_user_authorized():
+        async with Client(
+            "umedia-telegram",
+            api_id=int(self._config["api_id"]),
+            api_hash=str(self._config["api_hash"]),
+            session_string=str(self._config["session"]),
+            no_updates=True,
+        ) as client:
+            if await client.get_me() is None:
                 raise ValueError("Telegram session is not authorized")
-            entity = await client.get_entity(int(self._config["channel_id"]))
-            permissions = await client.get_permissions(entity, "me")
-            if not (
-                getattr(permissions, "is_admin", False)
-                or getattr(permissions, "is_creator", False)
+            member = await client.get_chat_member(int(self._config["channel_id"]), "me")
+            if member.status not in (
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
             ):
                 raise ValueError("Telegram session must administer the channel")
-        finally:
-            await client.disconnect()
-

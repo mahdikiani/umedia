@@ -203,10 +203,15 @@ export default function StorageSettingsPage() {
                       </span>
                     </span>
                   </label>
-                  <label className="flex items-start gap-3 text-sm">
+                  <label
+                    className={`flex items-start gap-3 text-sm ${
+                      connection.provider_type === "telegram" ? "opacity-60" : ""
+                    }`}
+                  >
                     <input
                       checked={connection.mirror_structure}
                       className="mt-0.5 size-4 shrink-0 accent-primary"
+                      disabled={connection.provider_type === "telegram"}
                       onChange={(event) =>
                         void updateConnectionFlags(connection.uid, {
                           mirror_structure: event.target.checked,
@@ -217,9 +222,9 @@ export default function StorageSettingsPage() {
                     <span>
                       <span className="font-medium">Mirror folder structure</span>
                       <span className="mt-0.5 block text-xs text-muted-foreground">
-                        Force UMedia library folders onto the provider. When
-                        off, same-storage copies share one object instead of
-                        duplicating bytes.
+                        {connection.provider_type === "telegram"
+                          ? "Telegram channels are flat and do not support folders."
+                          : "Force UMedia library folders onto the provider. When off, same-storage copies share one object instead of duplicating bytes."}
                       </span>
                     </span>
                   </label>

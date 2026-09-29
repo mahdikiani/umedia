@@ -124,6 +124,36 @@ class PluginBackend(ABC):
         """Raise `ResourceNotFoundError` if it doesn't exist."""
 
 
+class TelegramLoginPluginBackend:
+    async def login_start(
+        self,
+        config: dict[str, Any],
+        login_id: str,
+        phone: str,
+        channel_ref: str,
+    ) -> dict[str, str]:
+        raise NotImplementedError
+
+    async def login_code(
+        self,
+        config: dict[str, Any],
+        login_id: str,
+        code: str,
+    ) -> dict[str, str]:
+        raise NotImplementedError
+
+    async def login_password(
+        self,
+        config: dict[str, Any],
+        login_id: str,
+        password: str,
+    ) -> dict[str, str]:
+        raise NotImplementedError
+
+    async def login_cancel(self, login_id: str) -> None:
+        raise NotImplementedError
+
+
 def _parse_header_json(request: Request, header: str) -> dict[str, Any]:
     value = request.headers.get(header)
     if not value:
@@ -192,7 +222,9 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
         config = _parse_header_json(request, CONFIG_HEADER)
         range_header = request.headers.get("Range")
         stream = backend.read_content(
-            config, decode_resource_id(resource_id), range_header=range_header,
+            config,
+            decode_resource_id(resource_id),
+            range_header=range_header,
         )
         return StreamingResponse(stream)
 
@@ -227,6 +259,40 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
         config = _parse_header_json(request, CONFIG_HEADER)
         await backend.delete_resource(config, decode_resource_id(resource_id))
         return Response(status_code=204)
+
+    if isinstance(backend, TelegramLoginPluginBackend):
+
+        @app.post("/auth/start")
+        async def login_start(request: Request) -> dict[str, str]:
+            config = _parse_header_json(request, CONFIG_HEADER)
+            data = await request.json()
+            return await backend.login_start(
+                config,
+                str(data["login_id"]),
+                str(data["phone"]),
+                str(data["channel_ref"]),
+            )
+
+        @app.post("/auth/{login_id}/code")
+        async def login_code(login_id: str, request: Request) -> dict[str, str]:
+            config = _parse_header_json(request, CONFIG_HEADER)
+            data = await request.json()
+            return await backend.login_code(config, login_id, str(data["code"]))
+
+        @app.post("/auth/{login_id}/password")
+        async def login_password(login_id: str, request: Request) -> dict[str, str]:
+            config = _parse_header_json(request, CONFIG_HEADER)
+            data = await request.json()
+            return await backend.login_password(
+                config,
+                login_id,
+                str(data["password"]),
+            )
+
+        @app.delete("/auth/{login_id}", status_code=204)
+        async def login_cancel(login_id: str) -> Response:
+            await backend.login_cancel(login_id)
+            return Response(status_code=204)
 
     return app
 

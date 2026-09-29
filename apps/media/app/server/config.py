@@ -129,6 +129,12 @@ class Settings(config.Settings):
             "http://localhost",
         ),
     )
+    telegram_api_id: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_TELEGRAM_API_ID", ""),
+    )
+    telegram_api_hash: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_TELEGRAM_API_HASH", ""),
+    )
     # Identity login callback (separate from Drive storage OAuth paste flow).
     google_oidc_redirect_uri: str = dataclasses.field(
         default_factory=lambda: os.getenv("UMEDIA_OIDC_REDIRECT_URI", ""),

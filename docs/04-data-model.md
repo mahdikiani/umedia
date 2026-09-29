@@ -162,6 +162,21 @@ not already bound. `GET/PATCH /settings/placement`.
 | `default_connection_id` | str, nullable | used by the `default` policy |
 | `fill_order` | JSON list of connection uids | used by `fill_order` / `most_free` |
 
+### `operation_notifications`
+
+Persisted reports for failed asynchronous user commands. They are scoped to
+the initiating user and deduplicated by their source job or upload id.
+
+| Column | Type | Notes |
+|---|---|---|
+| `uid` | str, pk | |
+| `owner_id` | str, indexed | user who initiated the operation |
+| `operation` | str | `upload` / `copy` / `move` |
+| `item_name` | str | file or affected item label |
+| `error` | text | actionable failure detail |
+| `source_type`, `source_uid` | str | idempotency key for the failed job |
+| `read_at` | datetime, nullable | null until the user marks it read |
+
 ### `resources` (legacy, unmounted)
 
 The pre-dual-layer table. Migration `0005_storage_media_files` copied its

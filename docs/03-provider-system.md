@@ -215,8 +215,21 @@ already speaks well, rather than hand-maintaining a bespoke async client.
   `UMEDIA_DROPBOX_OAUTH_CLIENT_ID` / `UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET`;
   each has its own optional redirect URI, also defaulting to
   `http://localhost`. The redirect URI must be registered with each app.
-- `telegram` — Telethon, ports `apps/api/providers/telegram.py`. Native:
-  rclone has no Telegram backend.
+- `telegram` — Kurigram, ports `apps/api/providers/telegram.py`. Native:
+  rclone has no Telegram backend. The server requires
+  `UMEDIA_TELEGRAM_API_ID` and `UMEDIA_TELEGRAM_API_HASH`; without both,
+  `/provider-types` reports Telegram as unavailable, the UI locks its card,
+  and `POST /providers` rejects attempts to bypass the UI. The API credentials
+  are injected server-side and are not shown in the connection form. Login
+  runs through `POST /providers/telegram/login/start` with a channel name or
+  `@username`, followed by the code and, when enabled, 2FA password endpoints.
+  Once signed in, Kurigram resolves the handle or searches joined dialogs for
+  an exact title, then verifies channel-admin access. The isolated plugin holds
+  the temporary in-memory Kurigram client for up to five minutes. The core
+  binds each login id to its authenticated owner, then encrypts and stores the
+  exported session and resolved numeric channel id in the new connection. The
+  browser never receives the session string; `DELETE` on the login id cancels
+  an unfinished attempt.
 
 ### Testing
 

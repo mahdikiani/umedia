@@ -6,6 +6,7 @@ connections. Provider type `local` is admin-only (create and use).
 
 import asyncio
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, Request, Response, status
 from fastapi_mongo_base.errors import NotFoundError
@@ -22,6 +23,9 @@ from .schemas import (
     ProviderConnectionResponse,
     ProviderConnectionUpdate,
     ProviderTypeResponse,
+    TelegramLoginResponse,
+    TelegramLoginStartRequest,
+    TelegramLoginStepRequest,
 )
 from .services import (
     LOCAL_PROVIDER_TYPE,
@@ -45,11 +49,18 @@ def _repository(request: Request) -> ProviderConnectionRepository:
 
 
 def _service(request: Request) -> ProviderConnectionService:
+    settings = request.app.state.settings
     return ProviderConnectionService(
         _repository(request),
         request.app.state.credential_cipher,
         request.app.state.plugin_registry,
         build_plugin_connector(request.app.state.plugin_process_manager),
+        server_configs={
+            "telegram": {
+                "api_id": settings.telegram_api_id,
+                "api_hash": settings.telegram_api_hash,
+            },
+        },
     )
 
 
@@ -118,7 +129,12 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
     (asyncio only holds a weak reference); shutdown also waits on the set
     so an in-flight import isn't killed mid-write.
     """
-    from apps.media_files.factory import build_media_file_service_from_state
+    from apps.media_files.factory import (
+        build_media_file_service_from_state,
+        build_notification_service_from_state,
+    )
+
+    job_uid = uuid4().hex
 
     async def _run() -> None:
         try:
@@ -133,7 +149,22 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
                 request.app.state,
                 connection_uid,
             )
-        except Exception:
+        except Exception as error:
+            try:
+                await build_notification_service_from_state(
+                    request.app.state,
+                ).record_failure(
+                    owner_id=actor_uid,
+                    operation="sync",
+                    item_name=connection_uid,
+                    error=str(error),
+                    source_type="provider_import",
+                    source_uid=job_uid,
+                )
+            except Exception:
+                logging.exception(
+                    "Could not persist failed provider import notification",
+                )
             logging.exception(
                 "Import for provider connection '%s' failed",
                 connection_uid,
@@ -164,6 +195,7 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
     registry = request.app.state.plugin_registry
     user = _user(request)
     include_local = _is_admin(user)
+    service = _service(request)
     return [
         ProviderTypeResponse(
             id=item.id,
@@ -173,6 +205,8 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
             status=item.status,
             capabilities=list(item.capabilities),
             connect_flow=item.connect_flow,
+            available=service.availability(item.id)[0],
+            unavailable_reason=service.availability(item.id)[1],
             fields=[
                 {
                     "key": field.key,
@@ -183,6 +217,11 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
                     "placeholder": field.placeholder,
                 }
                 for field in item.config_fields
+                if not field.server_managed
+                and not (
+                    item.connect_flow == "session"
+                    and field.key in {"session", "channel_id"}
+                )
             ],
         )
         for item in registry.provider_types()
@@ -279,6 +318,83 @@ async def oauth_complete(
     )
     _schedule_import(request, connection.uid, user.uid)
     return _response(connection)
+
+
+@router.post(
+    "/providers/telegram/login/start",
+    response_model=TelegramLoginResponse,
+)
+async def telegram_login_start(
+    data: TelegramLoginStartRequest,
+    request: Request,
+) -> TelegramLoginResponse:
+    user = _user(request)
+    result = await request.app.state.telegram_login_service.start(
+        owner_id=user.uid,
+        name=data.name,
+        phone=data.phone,
+        channel_ref=data.channel_ref,
+        import_existing=data.import_existing,
+        mirror_structure=False,
+    )
+    return TelegramLoginResponse(**result)
+
+
+@router.post(
+    "/providers/telegram/login/{login_id}/code",
+    response_model=TelegramLoginResponse,
+)
+async def telegram_login_code(
+    login_id: str,
+    data: TelegramLoginStepRequest,
+    request: Request,
+) -> TelegramLoginResponse:
+    user = _user(request)
+    result, connection = await request.app.state.telegram_login_service.advance(
+        owner_id=user.uid,
+        login_id=login_id,
+        step="code",
+        value=data.value,
+        connections=_service(request),
+        is_admin=_is_admin(user),
+    )
+    if connection is not None:
+        _schedule_import(request, connection.uid, user.uid)
+        return TelegramLoginResponse(**result, connection=_response(connection))
+    return TelegramLoginResponse(**result)
+
+
+@router.post(
+    "/providers/telegram/login/{login_id}/password",
+    response_model=TelegramLoginResponse,
+)
+async def telegram_login_password(
+    login_id: str,
+    data: TelegramLoginStepRequest,
+    request: Request,
+) -> TelegramLoginResponse:
+    user = _user(request)
+    result, connection = await request.app.state.telegram_login_service.advance(
+        owner_id=user.uid,
+        login_id=login_id,
+        step="password",
+        value=data.value,
+        connections=_service(request),
+        is_admin=_is_admin(user),
+    )
+    if connection is not None:
+        _schedule_import(request, connection.uid, user.uid)
+        return TelegramLoginResponse(**result, connection=_response(connection))
+    return TelegramLoginResponse(**result)
+
+
+@router.delete("/providers/telegram/login/{login_id}", status_code=204)
+async def telegram_login_cancel(login_id: str, request: Request) -> Response:
+    await request.app.state.telegram_login_service.cancel(
+        owner_id=_user(request).uid,
+        login_id=login_id,
+    )
+    return Response(status_code=204)
 
 
 @router.patch(

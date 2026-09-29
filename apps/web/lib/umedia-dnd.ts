@@ -10,16 +10,23 @@ export const UMEDIA_FROM_TEMPORARY_MIME =
 
 export type LibraryDragPayload = {
   sourceIds: string[];
+  sourceConnectionIds?: (string | null)[];
   fromTemporary?: boolean;
 };
 
 export function setLibraryDragPayload(
   dataTransfer: DataTransfer,
   sourceIds: string[],
-  options?: { fromTemporary?: boolean },
+  options?: {
+    fromTemporary?: boolean;
+    sourceConnectionIds?: (string | null)[];
+  },
 ): void {
   const payload: LibraryDragPayload = {
     sourceIds,
+    ...(options?.sourceConnectionIds
+      ? { sourceConnectionIds: options.sourceConnectionIds }
+      : {}),
     ...(options?.fromTemporary ? { fromTemporary: true } : {}),
   };
   dataTransfer.setData(UMEDIA_FILE_IDS_MIME, JSON.stringify(payload));
@@ -66,6 +73,13 @@ export function parseLibraryDragPayload(
       if (body.sourceIds.length === 0) return null;
       return {
         sourceIds: body.sourceIds,
+        ...(Array.isArray(body.sourceConnectionIds) &&
+        body.sourceConnectionIds.length === body.sourceIds.length &&
+        body.sourceConnectionIds.every(
+          (id) => id === null || typeof id === "string",
+        )
+          ? { sourceConnectionIds: body.sourceConnectionIds }
+          : {}),
         ...(body.fromTemporary ? { fromTemporary: true } : {}),
       };
     }
@@ -89,17 +103,16 @@ export function dataTransferFromTemporary(
   return Array.from(data.types).includes(UMEDIA_FROM_TEMPORARY_MIME);
 }
 
-/**
- * Drag from Temporary → always move.
- * Otherwise Alt/Option held → copy; default → move.
- */
-export function transferOperationFromEvent(
-  event: Pick<DragEvent, "altKey"> & {
-    dataTransfer?: DataTransfer | null;
-  },
-  payload?: LibraryDragPayload | null,
+export function transferOperationForStorage(
+  sourceConnectionIds: (string | null)[] | undefined,
+  destinationConnectionId: string | null | undefined,
 ): "move" | "copy" {
-  if (payload?.fromTemporary) return "move";
-  if (dataTransferFromTemporary(event.dataTransfer)) return "move";
-  return event.altKey ? "copy" : "move";
+  if (
+    destinationConnectionId &&
+    sourceConnectionIds?.length &&
+    sourceConnectionIds.every((id) => id === destinationConnectionId)
+  ) {
+    return "move";
+  }
+  return "copy";
 }

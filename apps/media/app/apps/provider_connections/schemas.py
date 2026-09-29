@@ -39,6 +39,17 @@ class OAuthCompleteRequest(BaseModel):
     mirror_structure: bool = False
 
 
+class TelegramLoginStartRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    phone: str = Field(min_length=5, max_length=32)
+    channel_ref: str = Field(min_length=1, max_length=256)
+    import_existing: bool = False
+
+
+class TelegramLoginStepRequest(BaseModel):
+    value: str = Field(min_length=1, max_length=256)
+
+
 class ProviderConnectionUpdate(BaseModel):
     """`PATCH /providers/{uid}` -- rename, enable/disable, and/or toggle
     the dual-layer flags; not a config change (see
@@ -64,6 +75,12 @@ class ProviderConnectionResponse(BaseModel):
     last_error: str | None = None
 
 
+class TelegramLoginResponse(BaseModel):
+    login_id: str | None = None
+    step: str
+    connection: ProviderConnectionResponse | None = None
+
+
 class ProviderFieldResponse(BaseModel):
     key: str
     label: str
@@ -81,8 +98,7 @@ class ProviderTypeResponse(BaseModel):
     status: str
     capabilities: list[str]
     fields: list[ProviderFieldResponse]
+    available: bool = True
+    unavailable_reason: str | None = None
     # "token" (single-step create with config fields), "oauth" (Google
-    # Drive localhost-redirect paste flow via `/providers/oauth/start`
-    # + `/providers/oauth/complete`), or "session" (Telegram multi-step;
-    # not built yet).
     connect_flow: str

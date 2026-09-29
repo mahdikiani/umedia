@@ -1,19 +1,22 @@
-"""Unit tests for TelegramBackend against a fake Telethon client.
+"""Unit tests for TelegramBackend against a fake Kurigram client.
 
 No live Telegram account/session is possible in this environment -- these
-tests verify UMedia's own glue logic (the right Telethon calls, mapped
-into the right Resource shape), not Telethon itself. See
+tests verify UMedia's own glue logic (the right Kurigram calls, mapped
+into the right Resource shape), not Kurigram itself. See
 plugins/telegram/backend.py's module docstring.
 """
+
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Any
+from types import SimpleNamespace
+from typing import BinaryIO
 from unittest.mock import patch
 
 import pytest
-from telethon.tl.types import DocumentAttributeFilename
+from pyrogram.enums import ChatMemberStatus
 
 from plugins.contracts import (
     ConnectionFailedError,
@@ -34,30 +37,24 @@ CONFIG = {
 class _FakeDocument:
     def __init__(self, data: bytes, name: str) -> None:
         self.size = len(data)
+        self.file_size = len(data)
+        self.file_name = name
         self.mime_type = "application/octet-stream"
-        self.attributes = [DocumentAttributeFilename(file_name=name)]
         self.data = data
 
 
+@dataclass
 class _FakeMessage:
-    def __init__(self, message_id: int, document: _FakeDocument | None) -> None:
-        self.id = message_id
-        self.document = document
-
-    @property
-    def media(self) -> _FakeDocument | None:
-        return self.document
+    id: int
+    document: _FakeDocument | None
 
 
 @dataclass
-class _FakePermissions:
-    is_admin: bool
-    is_creator: bool = False
+class _FakeMember:
+    status: ChatMemberStatus
 
 
 class FakeTelegramClient:
-    """Stands in for `telethon.TelegramClient` in these tests."""
-
     def __init__(
         self,
         *_args: object,
@@ -71,42 +68,97 @@ class FakeTelegramClient:
         self.messages: dict[int, _FakeMessage] = {}
         self._next_id = 1
 
+    async def get_chat(self, channel_ref: str | int) -> SimpleNamespace:
+        if channel_ref == "A Channel":
+            raise ValueError("not a username")
+        assert channel_ref in {"my_channel", -100123}
+        return SimpleNamespace(id=-100123)
+
+    async def get_dialogs(self) -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(chat=SimpleNamespace(id=-100123, title="A Channel"))
+
+    async def __aenter__(self) -> FakeTelegramClient:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        await self.disconnect()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected
+
     async def connect(self) -> None:
         self.connected = True
 
     async def disconnect(self) -> None:
         self.connected = False
 
-    async def is_user_authorized(self) -> bool:
-        return self.authorized
+    async def send_code(self, _phone: str) -> SimpleNamespace:
+        return SimpleNamespace(phone_code_hash="hash")
 
-    async def get_entity(self, channel_id: int) -> str:
-        return f"channel-{channel_id}"
+    async def sign_in(self, _phone: str, _code_hash: str, _code: str) -> None:
+        return None
 
-    async def get_permissions(self, _entity: str, _who: str) -> _FakePermissions:
-        return _FakePermissions(is_admin=self.admin)
+    async def check_password(self, _password: str) -> None:
+        return None
 
-    async def iter_messages(
-        self, _channel: str, *, limit: int,
+    async def export_session_string(self) -> str:
+        return "exported-session"
+
+    async def get_me(self) -> str | None:
+        return "me" if self.authorized else None
+
+    async def get_chat_member(self, _channel: int, _who: str) -> _FakeMember:
+        status = (
+            ChatMemberStatus.ADMINISTRATOR if self.admin else ChatMemberStatus.MEMBER
+        )
+        return _FakeMember(status=status)
+
+    async def get_chat_history(
+        self,
+        _channel: str,
+        *,
+        limit: int,
     ) -> AsyncIterator[_FakeMessage]:
         for message in sorted(
-            self.messages.values(), key=lambda m: m.id, reverse=True,
+            self.messages.values(),
+            key=lambda m: m.id,
+            reverse=True,
         )[:limit]:
             yield message
 
-    async def get_messages(self, _channel: str, *, ids: int) -> _FakeMessage | None:
-        return self.messages.get(ids)
+    async def get_messages(
+        self,
+        _channel: str,
+        *,
+        message_ids: int,
+    ) -> _FakeMessage | None:
+        return self.messages.get(message_ids)
 
-    async def iter_download(
-        self, media: _FakeDocument, *, offset: int = 0, limit: int | None = None,
+    async def stream_media(
+        self,
+        message: _FakeMessage,
+        *,
+        offset: int = 0,
+        limit: int = 0,
     ) -> AsyncIterator[bytes]:
-        end = len(media.data) if limit is None else offset + limit
-        yield media.data[offset:end]
+        assert message.document is not None
+        start = offset * (1024 * 1024)
+        end = (
+            len(message.document.data) if limit == 0 else start + limit * (1024 * 1024)
+        )
+        yield message.document.data[start:end]
 
-    async def send_file(
-        self, _channel: str, *, file: Any, file_name: str, force_document: bool,  # noqa: ANN401
+    async def send_document(
+        self,
+        _channel: str,
+        *,
+        document: BinaryIO,
+        file_name: str,
+        force_document: bool,
     ) -> _FakeMessage:
-        body = file.read()
+        body = document.read()
         message = _FakeMessage(self._next_id, _FakeDocument(body, file_name))
         self.messages[message.id] = message
         self._next_id += 1
@@ -123,16 +175,9 @@ async def _content(chunks: list[bytes]) -> AsyncIterator[bytes]:  # noqa: RUF029
 
 
 def _patched(client: FakeTelegramClient) -> ExitStack:
-    """Patch both `TelegramClient` and `StringSession` -- the real
-    `StringSession` validates its input string's format eagerly in
-    `__init__`, and a plain test string like "session-string" isn't a
-    valid one, so it must be faked too, not just the client."""
     stack = ExitStack()
     stack.enter_context(
-        patch("plugins.telegram.backend.TelegramClient", return_value=client),
-    )
-    stack.enter_context(
-        patch("plugins.telegram.backend.StringSession", return_value="fake-session"),
+        patch("plugins.telegram.backend.Client", return_value=client),
     )
     return stack
 
@@ -165,7 +210,9 @@ async def test_create_list_get_read_round_trip() -> None:
     backend = TelegramBackend()
     with _patched(client):
         created = await backend.create_resource(
-            CONFIG, CreateResourceIn(name="hello.txt"), content=_content([b"hi"]),
+            CONFIG,
+            CreateResourceIn(name="hello.txt"),
+            content=_content([b"hi"]),
         )
         assert created.name == "hello.txt"
         assert created.size == 2
@@ -177,11 +224,24 @@ async def test_create_list_get_read_round_trip() -> None:
         assert fetched.name == "hello.txt"
 
         content = b"".join([
-            chunk async for chunk in backend.read_content(
-                CONFIG, created.id, range_header=None,
+            chunk
+            async for chunk in backend.read_content(
+                CONFIG,
+                created.id,
+                range_header=None,
             )
         ])
         assert content == b"hi"
+
+        ranged_content = b"".join([
+            chunk
+            async for chunk in backend.read_content(
+                CONFIG,
+                created.id,
+                range_header="bytes=1-1",
+            )
+        ])
+        assert ranged_content == b"i"
 
 
 @pytest.mark.asyncio
@@ -189,7 +249,9 @@ async def test_create_folder_is_rejected() -> None:
     client = FakeTelegramClient()
     with _patched(client), pytest.raises(ConnectionFailedError, match="folders"):
         await TelegramBackend().create_resource(
-            CONFIG, CreateResourceIn(name="dir", type="folder"), content=_content([]),
+            CONFIG,
+            CreateResourceIn(name="dir", type="folder"),
+            content=_content([]),
         )
 
 
@@ -213,7 +275,9 @@ async def test_update_with_content_replaces_and_gets_a_new_id() -> None:
     backend = TelegramBackend()
     with _patched(client):
         created = await backend.create_resource(
-            CONFIG, CreateResourceIn(name="a.txt"), content=_content([b"old"]),
+            CONFIG,
+            CreateResourceIn(name="a.txt"),
+            content=_content([b"old"]),
         )
 
         updated = await backend.update_resource(
@@ -228,8 +292,11 @@ async def test_update_with_content_replaces_and_gets_a_new_id() -> None:
         with pytest.raises(ResourceNotFoundError):
             await backend.get_resource(CONFIG, created.id)
         new_content = b"".join([
-            chunk async for chunk in backend.read_content(
-                CONFIG, updated.id, range_header=None,
+            chunk
+            async for chunk in backend.read_content(
+                CONFIG,
+                updated.id,
+                range_header=None,
             )
         ])
         assert new_content == b"new"
@@ -241,17 +308,25 @@ async def test_rename_without_content_reuploads_the_same_bytes() -> None:
     backend = TelegramBackend()
     with _patched(client):
         created = await backend.create_resource(
-            CONFIG, CreateResourceIn(name="a.txt"), content=_content([b"unchanged"]),
+            CONFIG,
+            CreateResourceIn(name="a.txt"),
+            content=_content([b"unchanged"]),
         )
 
         renamed = await backend.update_resource(
-            CONFIG, created.id, UpdateResourceIn(name="b.txt"), content=None,
+            CONFIG,
+            created.id,
+            UpdateResourceIn(name="b.txt"),
+            content=None,
         )
 
         assert renamed.name == "b.txt"
         content = b"".join([
-            chunk async for chunk in backend.read_content(
-                CONFIG, renamed.id, range_header=None,
+            chunk
+            async for chunk in backend.read_content(
+                CONFIG,
+                renamed.id,
+                range_header=None,
             )
         ])
         assert content == b"unchanged"
@@ -263,13 +338,110 @@ async def test_delete_removes_the_message() -> None:
     backend = TelegramBackend()
     with _patched(client):
         created = await backend.create_resource(
-            CONFIG, CreateResourceIn(name="a.txt"), content=_content([b"x"]),
+            CONFIG,
+            CreateResourceIn(name="a.txt"),
+            content=_content([b"x"]),
         )
 
         await backend.delete_resource(CONFIG, created.id)
 
         with pytest.raises(ResourceNotFoundError):
             await backend.get_resource(CONFIG, created.id)
+
+
+@pytest.mark.asyncio
+async def test_login_code_exports_session_and_closes_temporary_client() -> None:
+    client = FakeTelegramClient()
+    backend = TelegramBackend()
+    with _patched(client):
+        await backend.login_start(
+            {"api_id": "1", "api_hash": "hash"},
+            "login-id",
+            "+1234567890",
+            "@my_channel",
+        )
+        result = await backend.login_code({}, "login-id", "12345")
+
+    assert result == {
+        "step": "complete",
+        "session": "exported-session",
+        "channel_id": "-100123",
+    }
+    assert client.connected is False
+    assert "login-id" not in backend._login_attempts
+
+
+@pytest.mark.asyncio
+async def test_login_resolves_channel_title_from_joined_dialogs() -> None:
+    client = FakeTelegramClient()
+    backend = TelegramBackend()
+    with _patched(client):
+        await backend.login_start(
+            {"api_id": "1", "api_hash": "hash"},
+            "login-id",
+            "+1234567890",
+            "A Channel",
+        )
+        result = await backend.login_code({}, "login-id", "12345")
+
+    assert result["channel_id"] == "-100123"
+
+
+@pytest.mark.asyncio
+async def test_login_returns_password_step_when_telegram_requires_two_factor() -> None:
+    from pyrogram.errors import SessionPasswordNeeded
+
+    client = FakeTelegramClient()
+    backend = TelegramBackend()
+    with (
+        _patched(client),
+        patch.object(
+            client,
+            "sign_in",
+            side_effect=SessionPasswordNeeded,
+        ),
+    ):
+        await backend.login_start(
+            {"api_id": "1", "api_hash": "hash"},
+            "login-id",
+            "+1234567890",
+            "-100123",
+        )
+        result = await backend.login_code({}, "login-id", "12345")
+
+    assert result == {"step": "password"}
+    assert client.connected is True
+    result = await backend.login_password({}, "login-id", "two-step-password")
+    assert result == {
+        "step": "complete",
+        "session": "exported-session",
+        "channel_id": "-100123",
+    }
+    assert client.connected is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_login_code_returns_a_safe_provider_error() -> None:
+    from pyrogram.errors import PhoneCodeInvalid
+
+    client = FakeTelegramClient()
+    backend = TelegramBackend()
+    with (
+        _patched(client),
+        patch.object(client, "sign_in", side_effect=PhoneCodeInvalid),
+    ):
+        await backend.login_start(
+            {"api_id": "1", "api_hash": "hash"},
+            "login-id",
+            "+1234567890",
+            "-100123",
+        )
+        with pytest.raises(ConnectionFailedError, match="invalid or expired"):
+            await backend.login_code({}, "login-id", "wrong")
+
+    assert client.connected is True
+    await backend.login_cancel("login-id")
+    assert client.connected is False
 
 
 @pytest.mark.asyncio

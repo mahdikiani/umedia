@@ -164,7 +164,7 @@ PluginProcessManager
     supports onedrive/dropbox/webdav/nextcloud/ftp/sftp once it exists.
     Google Drive's OAuth: check rclone rcd's own `config/create` OAuth
     support before hand-building a start/callback flow.
-  - `telegram` (ports `apps/api/providers/telegram.py`, Telethon) — kept
+  - `telegram` (ports `apps/api/providers/telegram.py`, Kurigram) — kept
     native, rclone has no Telegram backend.
 
 ## Development process: TDD, every phase

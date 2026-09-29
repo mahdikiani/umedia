@@ -36,8 +36,45 @@ const googleDriveType = {
   connect_flow: "oauth" as const,
 };
 
+const lockedTelegramType = {
+  id: "telegram",
+  name: "Telegram",
+  description: "Store media in a Telegram channel using MTProto.",
+  adapter: "telegram",
+  status: "beta" as const,
+  capabilities: ["list", "read", "write"],
+  fields: [],
+  connect_flow: "session" as const,
+  available: false,
+  unavailable_reason:
+    "Set UMEDIA_TELEGRAM_API_ID and UMEDIA_TELEGRAM_API_HASH in the server environment to enable this provider.",
+};
+
+const telegramType = {
+  ...lockedTelegramType,
+  available: true,
+  unavailable_reason: null,
+  fields: [],
+};
+
 describe("add storage form", () => {
   afterEach(cleanup);
+
+  it("locks Telegram when server credentials are missing", () => {
+    render(
+      <AddStorageForm
+        onCreated={vi.fn()}
+        providerTypes={[lockedTelegramType]}
+      />,
+    );
+
+    const telegram = screen.getByRole("button", {
+      name: /Telegram unavailable/,
+    });
+    expect(telegram).toBeDisabled();
+    expect(screen.getByText(/UMEDIA_TELEGRAM_API_ID/)).toBeInTheDocument();
+    expect(screen.getByText("Locked")).toBeInTheDocument();
+  });
 
   it("includes both dual-layer flags in the create request", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
@@ -175,5 +212,176 @@ describe("add storage form", () => {
         expect.objectContaining({ uid: "gdrive-1", provider_type: "google_drive" }),
       );
     });
+  });
+
+  it("signs into Telegram with a code and creates a connection", async () => {
+    const onCreated = vi.fn();
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url === "/api/v1/providers/telegram/login/start") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ login_id: "pending-login", step: "code" }),
+        };
+      }
+      if (url === "/api/v1/providers/telegram/login/pending-login/code") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            step: "complete",
+            connection: {
+              uid: "telegram-1",
+              provider_type: "telegram",
+              name: "My channel",
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AddStorageForm onCreated={onCreated} providerTypes={[telegramType]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Telegram/ }));
+    fireEvent.change(screen.getByLabelText("Connection name"), {
+      target: { value: "My channel" },
+    });
+    fireEvent.change(screen.getByLabelText("Phone number"), {
+      target: { value: "+1234567890" },
+    });
+    fireEvent.change(screen.getByLabelText("Channel name or @username"), {
+      target: { value: "@my_channel" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send login code" }));
+
+    await screen.findByLabelText("Telegram login code");
+    fireEvent.change(screen.getByLabelText("Telegram login code"), {
+      target: { value: "12345" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ uid: "telegram-1", provider_type: "telegram" }),
+      );
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/v1/providers/telegram/login/start",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "My channel",
+          phone: "+1234567890",
+          channel_ref: "@my_channel",
+          import_existing: false,
+        }),
+      }),
+    );
+  });
+
+  it("asks for the two-step password when Telegram requests it", async () => {
+    const onCreated = vi.fn();
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url === "/api/v1/providers/telegram/login/start") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ login_id: "pending-login", step: "code" }),
+        };
+      }
+      if (url.endsWith("/code")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ step: "password" }),
+        };
+      }
+      if (url.endsWith("/password")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            step: "complete",
+            connection: { uid: "telegram-2", provider_type: "telegram" },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AddStorageForm onCreated={onCreated} providerTypes={[telegramType]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Telegram/ }));
+    fireEvent.change(screen.getByLabelText("Phone number"), {
+      target: { value: "+1234567890" },
+    });
+    fireEvent.change(screen.getByLabelText("Channel name or @username"), {
+      target: { value: "A Channel" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send login code" }));
+    await screen.findByLabelText("Telegram login code");
+    fireEvent.change(screen.getByLabelText("Telegram login code"), {
+      target: { value: "12345" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+    await screen.findByLabelText("Two-step verification password");
+    fireEvent.change(screen.getByLabelText("Two-step verification password"), {
+      target: { value: "two-step" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify password" }));
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ uid: "telegram-2", provider_type: "telegram" }),
+      );
+    });
+  });
+
+  it("shows Telegram's specific invalid-code response", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url === "/api/v1/providers/telegram/login/start") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ login_id: "pending-login", step: "code" }),
+        };
+      }
+      if (url.endsWith("/code")) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            error_code: "telegram_login_failed",
+            message: { en: "Telegram rejected the login code or password" },
+            detail: "Telegram login code is invalid or expired. Cancel and request a new code.",
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AddStorageForm onCreated={vi.fn()} providerTypes={[telegramType]} />);
+    fireEvent.click(screen.getByRole("button", { name: /Telegram/ }));
+    fireEvent.change(screen.getByLabelText("Phone number"), {
+      target: { value: "+1234567890" },
+    });
+    fireEvent.change(screen.getByLabelText("Channel name or @username"), {
+      target: { value: "@my_channel" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send login code" }));
+    await screen.findByLabelText("Telegram login code");
+    fireEvent.change(screen.getByLabelText("Telegram login code"), {
+      target: { value: "12345" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify code" }));
+
+    expect(
+      await screen.findByText(
+        "Telegram login code is invalid or expired. Cancel and request a new code.",
+      ),
+    ).toBeInTheDocument();
   });
 });

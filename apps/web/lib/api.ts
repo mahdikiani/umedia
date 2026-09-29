@@ -70,10 +70,9 @@ export type ProviderType = {
   status: "available" | "beta" | "planned";
   capabilities: string[];
   fields: ProviderField[];
-  // "token" → POST /providers with config fields; "oauth" → paste-flow
-  // via /providers/oauth/start + /complete (Google Drive); "session"
-  // (Telegram) not built yet.
   connect_flow: "token" | "oauth" | "session";
+  available?: boolean;
+  unavailable_reason?: string | null;
 };
 
 export type OAuthStartResponse = {
@@ -81,6 +80,12 @@ export type OAuthStartResponse = {
   authorization_url: string;
   state: string;
   redirect_uri: string;
+};
+
+export type TelegramLoginResponse = {
+  login_id?: string | null;
+  step: "code" | "password" | "complete";
+  connection?: ProviderConnection | null;
 };
 
 export type ProviderConnection = {
@@ -407,6 +412,23 @@ export type TransferJob = {
   finished_at: string | null;
 };
 
+export type OperationNotification = {
+  uid: string;
+  operation: string;
+  item_name: string;
+  error: string;
+  read_at: string | null;
+  created_at: string;
+};
+
+export function listNotifications(): Promise<OperationNotification[]> {
+  return api<OperationNotification[]>("/notifications");
+}
+
+export function markNotificationRead(uid: string): Promise<OperationNotification> {
+  return api<OperationNotification>(`/notifications/${uid}/read`, { method: "PATCH" });
+}
+
 export type TransferCreate = {
   operation: "move" | "copy";
   source_ids: string[];
@@ -427,6 +449,12 @@ export function listTransfers(): Promise<TransferJob[]> {
 
 export function getTransfer(uid: string): Promise<TransferJob> {
   return api<TransferJob>(`/files/transfers/${uid}`);
+}
+
+export function cancelTransfer(uid: string): Promise<TransferJob> {
+  return api<TransferJob>(`/files/transfers/${uid}/cancel`, {
+    method: "POST",
+  });
 }
 
 export function listTemporary(): Promise<MediaFileItem[]> {
@@ -450,5 +478,7 @@ export function clearTemporary(): Promise<void> {
 }
 
 export function isTransferInFlight(status: string): boolean {
-  return status === "queued" || status === "running";
+  return (
+    status === "queued" || status === "running" || status === "cancelling"
+  );
 }

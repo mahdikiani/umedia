@@ -5,7 +5,8 @@ import pytest
 import pytest_asyncio
 
 from apps.media_files.errors import MediaFileValidationError
-from apps.media_files.transfer_repository import TransferRepository
+from apps.media_files.schemas import MediaFileRecord
+from apps.media_files.transfer_repository import TransferRecord, TransferRepository
 from apps.media_files.transfer_service import TransferCreate, TransferService
 from tests.media_file_helpers import FakeConnection, Harness, build_harness
 
@@ -39,7 +40,7 @@ async def _run(
     dest_parent_id: str | None = None,
     conflict: str = "rename",
     is_admin: bool = False,
-):
+) -> TransferRecord:
     record = await transfers.create_and_enqueue(
         actor_user_id,
         TransferCreate(
@@ -453,6 +454,267 @@ async def test_get_transfer_not_found_for_other_user(harness: Harness) -> None:
     with pytest.raises(Exception) as exc:
         await transfers.get(job.uid, actor_user_id=OTHER_USER_ID)
     assert getattr(exc.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_transfer_finishes_without_moving_source(
+    harness: Harness,
+) -> None:
+    destination = await harness.service.create_folder(
+        name="cancel destination",
+        parent_id=None,
+        owner_id=OWNER_ID,
+    )
+    source = await harness.service.upload(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="queued.txt",
+        content=b"queued",
+        owner_id=OWNER_ID,
+    )
+    transfers = _transfers(harness)
+    job = await transfers.create_and_enqueue(
+        OWNER_ID,
+        TransferCreate(
+            operation="move",
+            source_ids=[source.uid],
+            dest_parent_id=destination.uid,
+        ),
+        schedule=False,
+    )
+
+    cancelled = await transfers.cancel(job.uid, actor_user_id=OWNER_ID)
+    result = await transfers.run_job(job.uid)
+
+    assert cancelled.status == "cancelled"
+    assert result.status == "cancelled"
+    assert result.done_items == 0
+    stored_source = await harness.service.get(source.uid, actor_user_id=OWNER_ID)
+    assert stored_source.parent_id is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_running_transfer_rolls_back_completed_items(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = await harness.service.create_folder(
+        name="running cancel destination",
+        parent_id=None,
+        owner_id=OWNER_ID,
+    )
+    sources = [
+        await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name=name,
+            content=b"x",
+            owner_id=OWNER_ID,
+        )
+        for name in ("first.txt", "second.txt")
+    ]
+    transfers = _transfers(harness)
+    job = await transfers.create_and_enqueue(
+        OWNER_ID,
+        TransferCreate(
+            operation="move",
+            source_ids=[source.uid for source in sources],
+            dest_parent_id=destination.uid,
+        ),
+        schedule=False,
+    )
+    original_process_move = transfers._process_move
+    item_started = asyncio.Event()
+    continue_item = asyncio.Event()
+
+    async def hold_first_item(
+        job_uid: str,
+        source: MediaFileRecord,
+        transfer_record: TransferRecord,
+        *,
+        actor_user_id: str,
+        is_admin: bool = False,
+    ) -> None:
+        if not item_started.is_set():
+            item_started.set()
+            await continue_item.wait()
+        await original_process_move(
+            job_uid,
+            source,
+            transfer_record,
+            actor_user_id=actor_user_id,
+            is_admin=is_admin,
+        )
+
+    monkeypatch.setattr(transfers, "_process_move", hold_first_item)
+    task = asyncio.create_task(transfers.run_job(job.uid))
+    await asyncio.wait_for(item_started.wait(), timeout=2)
+
+    requested = await transfers.cancel(job.uid, actor_user_id=OWNER_ID)
+    continue_item.set()
+    finished = await asyncio.wait_for(task, timeout=2)
+
+    assert requested.status == "cancelling"
+    assert finished.status == "cancelled"
+    assert finished.done_items == 1
+    first = await harness.service.get(sources[0].uid, actor_user_id=OWNER_ID)
+    second = await harness.service.get(sources[1].uid, actor_user_id=OWNER_ID)
+    assert first.parent_id is None
+    assert second.parent_id is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_cross_storage_move_keeps_source_after_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = await build_harness(
+        tmp_path,
+        FakeConnection(uid=CONNECTION_ID, owner_id=OWNER_ID),
+        FakeConnection(
+            uid=CONNECTION_2,
+            name="Local",
+            provider_type="local",
+            owner_id=OWNER_ID,
+        ),
+    )
+    try:
+        await harness.settings.update({
+            "placement_policy": "default",
+            "default_connection_id": CONNECTION_2,
+        })
+        source = await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name="cross-storage.txt",
+            content=b"source-bytes",
+            owner_id=OWNER_ID,
+        )
+        destination = await harness.service.create_folder(
+            name="cancel cross-storage",
+            parent_id=None,
+            owner_id=OWNER_ID,
+            is_admin=True,
+        )
+        transfers = _transfers(harness)
+        job = await transfers.create_and_enqueue(
+            OWNER_ID,
+            TransferCreate(
+                operation="move",
+                source_ids=[source.uid],
+                dest_parent_id=destination.uid,
+            ),
+            is_admin=True,
+            schedule=False,
+        )
+        original_copy_tree = transfers._copy_tree
+        copy_finished = asyncio.Event()
+        release_copy = asyncio.Event()
+
+        async def pause_after_copy(
+            job_uid: str,
+            file: MediaFileRecord,
+            *,
+            dest_parent_id: str | None,
+            conflict: str,
+            actor_user_id: str,
+            byte_copy: bool,
+            is_admin: bool = False,
+        ) -> MediaFileRecord | None:
+            result = await original_copy_tree(
+                job_uid,
+                file,
+                dest_parent_id=dest_parent_id,
+                conflict=conflict,
+                actor_user_id=actor_user_id,
+                byte_copy=byte_copy,
+                is_admin=is_admin,
+            )
+            copy_finished.set()
+            await release_copy.wait()
+            return result
+
+        monkeypatch.setattr(transfers, "_copy_tree", pause_after_copy)
+        task = asyncio.create_task(transfers.run_job(job.uid))
+        await asyncio.wait_for(copy_finished.wait(), timeout=2)
+
+        requested = await transfers.cancel(job.uid, actor_user_id=OWNER_ID)
+        release_copy.set()
+        finished = await asyncio.wait_for(task, timeout=2)
+
+        assert requested.status == "cancelling"
+        assert finished.status == "cancelled"
+        source_after = await harness.service.get(source.uid, actor_user_id=OWNER_ID)
+        assert source_after.is_deleted is False
+        copied = await harness.files.list(parent_id=destination.uid)
+        assert copied == []
+    finally:
+        await harness.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_failed_upload_removes_placeholder_and_keeps_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = await build_harness(
+        tmp_path,
+        FakeConnection(uid=CONNECTION_ID, owner_id=OWNER_ID),
+        FakeConnection(uid=CONNECTION_2, name="Second", owner_id=OWNER_ID),
+    )
+    try:
+        await harness.settings.update({
+            "placement_policy": "default",
+            "default_connection_id": CONNECTION_2,
+        })
+        source = await harness.service.upload(
+            provider_connection_id=CONNECTION_ID,
+            parent_id=None,
+            name="cancelled-upload.txt",
+            content=b"source-bytes",
+            owner_id=OWNER_ID,
+        )
+        destination = await harness.service.create_folder(
+            name="cancel failed upload",
+            parent_id=None,
+            owner_id=OWNER_ID,
+        )
+        transfers = _transfers(harness)
+        job = await transfers.create_and_enqueue(
+            OWNER_ID,
+            TransferCreate(
+                operation="copy",
+                source_ids=[source.uid],
+                dest_parent_id=destination.uid,
+            ),
+            schedule=False,
+        )
+        upload_started = asyncio.Event()
+        release_upload = asyncio.Event()
+
+        async def fail_upload(
+            connection_id: str,
+            metadata: object,
+            content: bytes,
+        ) -> object:
+            upload_started.set()
+            await release_upload.wait()
+            raise RuntimeError("simulated unauthenticated upload")
+
+        monkeypatch.setattr(harness.plugins, "create_resource", fail_upload)
+        task = asyncio.create_task(transfers.run_job(job.uid))
+        await asyncio.wait_for(upload_started.wait(), timeout=2)
+        requested = await transfers.cancel(job.uid, actor_user_id=OWNER_ID)
+        release_upload.set()
+        finished = await asyncio.wait_for(task, timeout=2)
+
+        assert requested.status == "cancelling"
+        assert finished.status == "cancelled"
+        assert await harness.files.list(parent_id=destination.uid) == []
+        source_after = await harness.service.get(source.uid, actor_user_id=OWNER_ID)
+        assert source_after.is_deleted is False
+    finally:
+        await harness.engine.dispose()
 
 
 def test_humanize_getobject_403_vs_putobject() -> None:

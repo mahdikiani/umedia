@@ -6,6 +6,9 @@ import { Suspense, useEffect, useState } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DashboardSearch } from "@/components/dashboard-search";
 import { LastLocationTracker } from "@/components/last-location-tracker";
+import { NotificationToastWatcher } from "@/components/notification-toast-watcher";
+import { NotificationBell } from "@/components/notification-bell";
+import { useLocale } from "@/components/locale-provider";
 import { LocaleToggle } from "@/components/locale-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Separator } from "@/components/ui/separator";
@@ -16,6 +19,7 @@ export default function DashboardLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const router = useRouter();
+  const { locale } = useLocale();
   // `null` = still checking, `false` = checked and blocked (redirecting
   // away, render nothing further), `true` = clear to show the shell.
   const [ready, setReady] = useState<boolean | null>(null);
@@ -65,15 +69,18 @@ export default function DashboardLayout({
       <Suspense fallback={null}>
         <AppSidebar />
         <LastLocationTracker />
+        <NotificationToastWatcher />
       </Suspense>
       <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
           <SidebarTrigger />
+          {locale === "fa" ? <NotificationBell /> : null}
           <Separator className="h-4" orientation="vertical" />
           <DashboardSearch />
           <div className="ms-auto flex items-center gap-1">
             <LocaleToggle />
             <ThemeToggle />
+            {locale !== "fa" ? <NotificationBell /> : null}
           </div>
         </header>
         <div className="flex-1 p-4 md:p-6">{children}</div>

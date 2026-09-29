@@ -7,8 +7,19 @@
   "connect_flow": "session",
   "capabilities": ["list", "read", "write", "delete", "copy"],
   "config_fields": [
-    { "key": "api_id", "label": "API ID" },
-    { "key": "api_hash", "label": "API hash", "secret": true },
+    {
+      "key": "api_id",
+      "label": "API ID",
+      "server_managed": true,
+      "environment_variable": "UMEDIA_TELEGRAM_API_ID"
+    },
+    {
+      "key": "api_hash",
+      "label": "API hash",
+      "secret": true,
+      "server_managed": true,
+      "environment_variable": "UMEDIA_TELEGRAM_API_HASH"
+    },
     { "key": "channel_id", "label": "Channel ID" },
     {
       "key": "session",

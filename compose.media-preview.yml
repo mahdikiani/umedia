@@ -47,6 +47,8 @@ services:
       UMEDIA_DROPBOX_OAUTH_CLIENT_ID: ${UMEDIA_DROPBOX_OAUTH_CLIENT_ID:-}
       UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET: ${UMEDIA_DROPBOX_OAUTH_CLIENT_SECRET:-}
       UMEDIA_DROPBOX_OAUTH_REDIRECT_URI: ${UMEDIA_DROPBOX_OAUTH_REDIRECT_URI:-http://localhost}
+      UMEDIA_TELEGRAM_API_ID: ${UMEDIA_TELEGRAM_API_ID:-${TELEGRAM_API_ID:-}}
+      UMEDIA_TELEGRAM_API_HASH: ${UMEDIA_TELEGRAM_API_HASH:-${TELEGRAM_API_HASH:-}}
       # Identity login callback (full-page redirect). Drive OAuth keeps localhost paste.
       UMEDIA_OIDC_REDIRECT_URI: ${UMEDIA_OIDC_REDIRECT_URI:-https://umedia.uln.me/api/v1/auth/oidc/callback}
       # fastapi_mongo_base reads these (SENTRY_DSN etc.) and calls

@@ -7,7 +7,7 @@ import {
   UMEDIA_FROM_TEMPORARY_MIME,
   parseLibraryDragPayload,
   setLibraryDragPayload,
-  transferOperationFromEvent,
+  transferOperationForStorage,
 } from "@/lib/umedia-dnd";
 
 function fakeDataTransfer(initial?: Record<string, string>): DataTransfer {
@@ -28,12 +28,19 @@ function fakeDataTransfer(initial?: Record<string, string>): DataTransfer {
 }
 
 describe("umedia-dnd payload", () => {
-  it("stores structured payload and fromTemporary marker MIME", () => {
+  it("stores source storage ids and fromTemporary marker MIME", () => {
     const dt = fakeDataTransfer();
-    setLibraryDragPayload(dt, ["a", "b"], { fromTemporary: true });
+    setLibraryDragPayload(dt, ["a", "b"], {
+      fromTemporary: true,
+      sourceConnectionIds: ["storage-a", "storage-b"],
+    });
 
     const raw = JSON.parse(dt.getData(UMEDIA_FILE_IDS_MIME));
-    expect(raw).toEqual({ sourceIds: ["a", "b"], fromTemporary: true });
+    expect(raw).toEqual({
+      sourceIds: ["a", "b"],
+      sourceConnectionIds: ["storage-a", "storage-b"],
+      fromTemporary: true,
+    });
     expect(dt.getData(UMEDIA_FROM_TEMPORARY_MIME)).toBe("1");
     expect(Array.from(dt.types)).toContain(UMEDIA_FROM_TEMPORARY_MIME);
   });
@@ -45,42 +52,23 @@ describe("umedia-dnd payload", () => {
     expect(parseLibraryDragPayload(dt)).toEqual({ sourceIds: ["legacy-1"] });
   });
 
-  it("forces move when fromTemporary even if Alt is held", () => {
-    const payload = { sourceIds: ["t-1"], fromTemporary: true as const };
-    expect(
-      transferOperationFromEvent({ altKey: true }, payload),
-    ).toBe("move");
-    expect(
-      transferOperationFromEvent({ altKey: false }, payload),
-    ).toBe("move");
+  it("moves within the same storage regardless of drag origin", () => {
+    expect(transferOperationForStorage(["storage-a"], "storage-a")).toBe(
+      "move",
+    );
   });
 
-  it("uses Alt for copy when not from Temporary", () => {
+  it("copies across storages, including a mixed-storage drag", () => {
+    expect(transferOperationForStorage(["storage-a"], "storage-b")).toBe(
+      "copy",
+    );
     expect(
-      transferOperationFromEvent(
-        { altKey: true },
-        { sourceIds: ["f-1"] },
-      ),
+      transferOperationForStorage(["storage-a", "storage-b"], "storage-a"),
     ).toBe("copy");
-    expect(
-      transferOperationFromEvent(
-        { altKey: false },
-        { sourceIds: ["f-1"] },
-      ),
-    ).toBe("move");
   });
 
-  it("detects fromTemporary via marker MIME during dragover", () => {
-    const dt = fakeDataTransfer({
-      [UMEDIA_FILE_IDS_MIME]: "",
-      [UMEDIA_FROM_TEMPORARY_MIME]: "1",
-    });
-    // Simulate browser clearing getData during dragover but keeping types.
-    Object.defineProperty(dt, "types", {
-      get: () => [UMEDIA_FILE_IDS_MIME, UMEDIA_FROM_TEMPORARY_MIME],
-    });
-    expect(
-      transferOperationFromEvent({ altKey: true, dataTransfer: dt }),
-    ).toBe("move");
+  it("copies when either storage is unknown", () => {
+    expect(transferOperationForStorage([null], "storage-a")).toBe("copy");
+    expect(transferOperationForStorage(["storage-a"], null)).toBe("copy");
   });
 });

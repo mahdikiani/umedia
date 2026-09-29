@@ -540,6 +540,19 @@ wheels = [
 ]
 
 [[package]]
+name = "kurigram"
+version = "2.2.26"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyaes" },
+    { name = "python-socks" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/48/65efaaaaf24dc62d6f6ef046843952ff17b5358f9c7119303ceee6d53657/kurigram-2.2.26.tar.gz", hash = "sha256:83b64fd7ab37122d920b1e7c0e221b599d7c52dd5d0d24c79956f01273020c49", size = 748176, upload-time = "2026-09-12T17:45:08.406Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/e0/a00020c21725550c9309e6e03787acf7236de2f284c8d9bc57644ae2160a/kurigram-2.2.26-py3-none-any.whl", hash = "sha256:f53cee6119a579b74620f45b5f83d543cd3bd510a8a6a1b4b3852e21603241e9", size = 6044442, upload-time = "2026-09-12T17:45:06.456Z" },
+]
+
+[[package]]
 name = "lazy-model"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -638,15 +651,6 @@ name = "pyaes"
 version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/44/66/2c17bae31c906613795711fc78045c285048168919ace2220daa372c7d72/pyaes-1.6.1.tar.gz", hash = "sha256:02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f", size = 28536, upload-time = "2017-09-20T21:17:54.23Z" }
-
-[[package]]
-name = "pyasn1"
-version = "0.6.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
-]
 
 [[package]]
 name = "pycparser"
@@ -853,6 +857,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-socks"
+version = "3.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/ad/484ffb79532517b11a90af38647c38652224650b31a7ae1cedd5a418d8ab/python_socks-3.1.1.tar.gz", hash = "sha256:8d3e817cdbe858dc0bb8c8fdc8e79b6ce37acce110d33374c6f57a675cc9029e", size = 232781, upload-time = "2026-09-08T13:03:31.058Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/23/2c2cef1b4313c55d1713201acd4ee2043fb2cf22e546ca9d36bf4317faea/python_socks-3.1.1-py3-none-any.whl", hash = "sha256:327e0d6378702c73a7790bf732e9f01392f17b48c7348a50b5bd1f710c2df1be", size = 49566, upload-time = "2026-09-08T13:03:29.604Z" },
+]
+
+[[package]]
 name = "pytz"
 version = "2026.3.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -895,18 +908,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
-]
-
-[[package]]
-name = "rsa"
-version = "4.9.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyasn1" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/da/8a/22b7beea3ee0d44b1916c0c1cb0ee3af23b700b6da9f04991899d0c555d4/rsa-4.9.1.tar.gz", hash = "sha256:e7bdbfdb5497da4c07dfd35530e1a902659db6ff241e39d9953cad06ebd0ae75", size = 29034, upload-time = "2025-04-16T09:51:18.218Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/8d/0133e4eb4beed9e425d9a98ed6e081a55d195481b7632472be1af08d2f6b/rsa-4.9.1-py3-none-any.whl", hash = "sha256:68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762", size = 34696, upload-time = "2025-04-16T09:51:17.142Z" },
 ]
 
 [[package]]
@@ -999,19 +1000,6 @@ wheels = [
 ]
 
 [[package]]
-name = "telethon"
-version = "1.44.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyaes" },
-    { name = "rsa" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/49/e2/d4137e598db0ba50e4cf9bf32f2e26d016b2c4bb0e9763e3d5a07007d780/telethon-1.44.0.tar.gz", hash = "sha256:7de1473e9e412e20bd57b102d8f50d48372712462be9ff6c003bb81c50ad7e98", size = 701463, upload-time = "2026-06-15T15:47:39.44Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/fd/4ad621d7a4b8655dfc964ee1c1267407496ec6fd10c91901a64ea29c16c8/telethon-1.44.0-py3-none-any.whl", hash = "sha256:52fc49efb67a4916c2aedcb295ad286f4afa2aba9bf15d83ed2acdc64af0c718", size = 789786, upload-time = "2026-06-15T15:47:41.534Z" },
-]
-
-[[package]]
 name = "truststore"
 version = "0.10.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1075,10 +1063,10 @@ dependencies = [
     { name = "fastapi" },
     { name = "fastapi-mongo-base" },
     { name = "greenlet" },
+    { name = "kurigram" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "sqlalchemy" },
-    { name = "telethon" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1102,10 +1090,10 @@ requires-dist = [
     { name = "fastapi" },
     { name = "fastapi-mongo-base" },
     { name = "greenlet" },
+    { name = "kurigram", specifier = ">=2.2.26" },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
     { name = "sqlalchemy" },
-    { name = "telethon" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 

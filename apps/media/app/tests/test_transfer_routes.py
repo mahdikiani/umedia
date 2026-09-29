@@ -40,23 +40,28 @@ async def connection_id(client: httpx.AsyncClient) -> str:
 
 
 async def _wait_transfer(
-    client: httpx.AsyncClient, uid: str, *, timeout: float = 10.0,
+    client: httpx.AsyncClient,
+    uid: str,
 ) -> dict:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        response = await client.get(f"/files/transfers/{uid}")
-        assert response.status_code == 200, response.text
-        body = response.json()
-        if body["status"] in {"completed", "failed", "partial", "cancelled"}:
-            return body
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"transfer {uid} did not finish")
+    async with asyncio.timeout(10):
+        while True:
+            response = await client.get(f"/files/transfers/{uid}")
+            assert response.status_code == 200, response.text
+            body = response.json()
+            if body["status"] in {
+                "completed",
+                "failed",
+                "partial",
+                "cancelled",
+            }:
+                return body
+            await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio
 async def test_create_transfer_returns_202_and_completes_move(
-    client: httpx.AsyncClient, connection_id: str,
+    client: httpx.AsyncClient,
+    connection_id: str,
 ) -> None:
     await _authenticated(client)
     folder = await client.post("/files", data={"name": "inbox", "type": "folder"})
@@ -95,10 +100,17 @@ async def test_create_transfer_returns_202_and_completes_move(
     assert fetched.status_code == 200
     assert fetched.json()["parent_id"] == folder_uid
 
+    cancelled = await client.post(
+        f"/files/transfers/{body['uid']}/cancel",
+    )
+    assert cancelled.status_code == 202, cancelled.text
+    assert cancelled.json()["status"] == "completed"
+
 
 @pytest.mark.asyncio
 async def test_list_transfers(
-    client: httpx.AsyncClient, connection_id: str,
+    client: httpx.AsyncClient,
+    connection_id: str,
 ) -> None:
     await _authenticated(client)
     folder = await client.post(
@@ -133,7 +145,8 @@ async def test_list_transfers(
 
 @pytest.mark.asyncio
 async def test_get_transfer_404_for_other_user(
-    client: httpx.AsyncClient, connection_id: str,
+    client: httpx.AsyncClient,
+    connection_id: str,
 ) -> None:
     await _authenticated(client)
     uploaded = await client.post(
@@ -159,14 +172,19 @@ async def test_get_transfer_404_for_other_user(
         "password": "a secure viewer password",
     }
     created_user = await client.post(
-        "/users", json={**member_credentials, "role": "user"},
+        "/users",
+        json={**member_credentials, "role": "user"},
     )
     assert created_user.status_code == 201, created_user.text
 
     member = httpx.AsyncClient(
-        transport=client._transport, base_url=str(client.base_url),
+        transport=client._transport,
+        base_url=str(client.base_url),
     )
     async with member:
         login = await member.post("/auth/sessions", json=member_credentials)
         assert login.status_code == 201, login.text
         assert (await member.get(f"/files/transfers/{transfer_uid}")).status_code == 404
+        assert (
+            await member.post(f"/files/transfers/{transfer_uid}/cancel")
+        ).status_code == 404

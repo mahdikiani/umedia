@@ -273,6 +273,7 @@ export function TemporaryDock({
                       onDragStart={(event) => {
                         setLibraryDragPayload(event.dataTransfer, [item.uid], {
                           fromTemporary: true,
+                          sourceConnectionIds: [item.provider_connection_id],
                         });
                       }}
                       title={item.name}

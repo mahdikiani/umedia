@@ -10,6 +10,7 @@ import {
   FileText,
   Home,
   LogOut,
+  Bell,
   ShieldCheck,
   Settings,
   Star,
@@ -42,7 +43,7 @@ import {
   SidebarMenuSubItem,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
-import { api, LIST_PAGE_SIZE, type MediaFileItem, type Page, type VolumeStats } from "@/lib/api";
+import { api, LIST_PAGE_SIZE, listNotifications, type MediaFileItem, type Page, type VolumeStats } from "@/lib/api";
 import { useCopy } from "@/lib/copy";
 import { formatBytes } from "@/lib/format";
 
@@ -58,6 +59,7 @@ export function AppSidebar() {
   const text = useCopy(locale);
   const side = locale === "fa" ? "right" : "left";
   const [stats, setStats] = useState<VolumeStats | null>(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [foldersByParent, setFoldersByParent] = useState<Record<string, MediaFileItem[]>>({});
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set());
@@ -69,6 +71,27 @@ export function AppSidebar() {
     api<VolumeStats>("/files/stats")
       .then(setStats)
       .catch(() => setStats(null));
+  }, [pathname]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshNotifications = () => {
+      listNotifications()
+        .then((items) => {
+          if (active) setUnreadNotifications(items.filter((item) => !item.read_at).length);
+        })
+        .catch(() => {
+          if (active) setUnreadNotifications(0);
+        });
+    };
+    refreshNotifications();
+    const interval = window.setInterval(refreshNotifications, 15_000);
+    window.addEventListener("umedia-notifications-updated", refreshNotifications);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("umedia-notifications-updated", refreshNotifications);
+    };
   }, [pathname]);
 
   const loadChildren = useCallback((parentId: string | null) => {
@@ -242,6 +265,21 @@ export function AppSidebar() {
                     {renderFolderTree("root")}
                   </SidebarMenuSub>
                 )}
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={pathname.startsWith("/notifications")}
+                  render={<Link href="/notifications" />}
+                  tooltip={text.navNotifications}
+                >
+                  <Bell />
+                  <span>{text.navNotifications}</span>
+                  {unreadNotifications > 0 ? (
+                    <span className="ms-auto rounded-full bg-destructive px-1.5 text-xs text-destructive-foreground">
+                      {unreadNotifications}
+                    </span>
+                  ) : null}
+                </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>

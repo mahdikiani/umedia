@@ -13,6 +13,7 @@ from apps.user_access_keys.factory import (
     build_user_access_key_service_from_state,
 )
 
+from .notifications import NotificationRepository, NotificationService
 from .plugin_gateway import MediaPluginGateway
 from .repository import MediaFileRepository
 from .services import MediaFileService
@@ -67,11 +68,24 @@ def build_transfer_service_from_state(state: _AppStateProtocol) -> TransferServi
         TransferRepository(state.session_factory),
         build_media_file_service_from_state(state),
         tasks=tasks if tasks is not None else set(),
+        notifications=NotificationService(
+            NotificationRepository(state.session_factory),
+        ),
     )
 
 
 def build_transfer_service(request: Request) -> TransferService:
     return build_transfer_service_from_state(request.app.state)
+
+
+def build_notification_service_from_state(
+    state: _AppStateProtocol,
+) -> NotificationService:
+    return NotificationService(NotificationRepository(state.session_factory))
+
+
+def build_notification_service(request: Request) -> NotificationService:
+    return build_notification_service_from_state(request.app.state)
 
 
 async def run_inbound_sync(

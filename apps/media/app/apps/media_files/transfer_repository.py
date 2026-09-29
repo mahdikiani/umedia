@@ -1,10 +1,10 @@
 """Persistence for library transfer jobs."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .models import LibraryTransfer
 
@@ -28,11 +28,17 @@ class TransferRecord:
     started_at: datetime | None
     finished_at: datetime | None
     is_admin: bool = False
+    created_ids: list[str] = field(default_factory=list)
+    moved_sources: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def progress_pct(self) -> int:
         if self.total_items <= 0:
-            return 100 if self.status in {"completed", "partial", "failed"} else 0
+            return (
+                100
+                if self.status in {"completed", "partial", "failed", "cancelled"}
+                else 0
+            )
         return min(100, (100 * self.done_items) // self.total_items)
 
 
@@ -56,6 +62,8 @@ def _to_record(row: LibraryTransfer) -> TransferRecord:
         started_at=row.started_at,
         finished_at=row.finished_at,
         is_admin=bool(meta.get("is_admin", False)),
+        created_ids=list(meta.get("created_ids", [])),
+        moved_sources=list(meta.get("moved_sources", [])),
     )
 
 
@@ -98,7 +106,10 @@ class TransferRepository:
         return None if row is None else _to_record(row)
 
     async def list_for_owner(
-        self, *, owner_id: str, limit: int = 50,
+        self,
+        *,
+        owner_id: str,
+        limit: int = 50,
     ) -> list[TransferRecord]:
         async with self._session_factory() as session:
             result = await session.execute(
@@ -123,3 +134,21 @@ class TransferRepository:
             await session.commit()
             await session.refresh(row)
             return _to_record(row)
+
+    async def update_if_status(
+        self,
+        uid: str,
+        expected_status: str,
+        changes: dict[str, Any],
+    ) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(LibraryTransfer)
+                .where(
+                    LibraryTransfer.uid == uid,
+                    LibraryTransfer.status == expected_status,
+                )
+                .values(**changes),
+            )
+            await session.commit()
+            return result.rowcount == 1

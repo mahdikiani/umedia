@@ -13,19 +13,30 @@ from plugins.process_manager import PluginProcessManager
 class RepositoryProtocol(Protocol):
     async def create(self, data: dict) -> object: ...
     async def get(
-        self, uid: str, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
     ) -> object | None: ...
     async def update(
-        self, uid: str, changes: dict, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        changes: dict,
+        *,
+        owner_id: str | None = None,
     ) -> object | None: ...
     async def delete(
-        self, uid: str, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
     ) -> bool: ...
 
 
 class LibrarySoftDeleteProtocol(Protocol):
     async def soft_delete_for_connection(
-        self, provider_connection_id: str,
+        self,
+        provider_connection_id: str,
     ) -> int: ...
 
 
@@ -123,9 +134,7 @@ def connection_usable_by(
     if owner_id is not None and owner_id != actor_user_id:
         return False
     provider_type = getattr(connection, "provider_type", None)
-    if provider_type == LOCAL_PROVIDER_TYPE and not is_admin:
-        return False
-    return True
+    return not (provider_type == LOCAL_PROVIDER_TYPE and not is_admin)
 
 
 class ProviderConnectionService:
@@ -137,11 +146,35 @@ class ProviderConnectionService:
         cipher: CipherProtocol,
         registry: RegistryProtocol,
         connect: Connector,
+        *,
+        server_configs: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._repository = repository
         self._cipher = cipher
         self._registry = registry
         self._connect = connect
+        self._server_configs = server_configs or {}
+
+    def availability(self, provider_type: str) -> tuple[bool, str | None]:
+        manifest = self._registry.get(provider_type)
+        if manifest is None:
+            return False, "Unknown provider type."
+        server_config = self._server_configs.get(provider_type, {})
+        missing_environment = [
+            field.environment_variable or field.label
+            for field in manifest.config_fields
+            if field.server_managed
+            and field.required
+            and not str(server_config.get(field.key, "")).strip()
+        ]
+        if not missing_environment:
+            return True, None
+        return (
+            False,
+            "Set "
+            + " and ".join(missing_environment)
+            + " in the server environment to enable this provider.",
+        )
 
     def _require_mirror_supported(self, provider_type: str) -> None:
         """Refuse `mirror_structure` when the provider has no folder/move
@@ -171,12 +204,19 @@ class ProviderConnectionService:
         manifest = self._registry.get(provider_type)
         if manifest is None:
             raise ProviderValidationError("Unknown provider type")
+        available, unavailable_reason = self.availability(provider_type)
+        if not available:
+            raise ProviderValidationError(
+                unavailable_reason or "Provider is unavailable",
+            )
         if mirror_structure:
             self._require_mirror_supported(provider_type)
+        normalized_input = dict(config)
+        normalized_input.update(self._server_configs.get(provider_type, {}))
         missing = [
             field.label
             for field in manifest.config_fields
-            if field.required and not config.get(field.key)
+            if field.required and not normalized_input.get(field.key)
         ]
         if missing:
             raise ProviderValidationError(
@@ -184,7 +224,7 @@ class ProviderConnectionService:
             )
         allowed_keys = {field.key for field in manifest.config_fields}
         normalized_config = {
-            key: value for key, value in config.items() if key in allowed_keys
+            key: value for key, value in normalized_input.items() if key in allowed_keys
         }
         try:
             await self._connect(manifest, normalized_config)
@@ -219,15 +259,34 @@ class ProviderConnectionService:
         if current is None:
             return None
         if mirror_structure is True:
-            provider_type = getattr(current, "provider_type", None)
-            if provider_type is None and isinstance(current, dict):
-                provider_type = current.get("provider_type")
-            if not isinstance(provider_type, str):
-                raise ProviderValidationError(
-                    "Connection is missing provider_type",
-                )
-            self._require_mirror_supported(provider_type)
+            self._validate_connection_mirror(current)
 
+        changes = self._connection_changes(
+            name=name,
+            enabled=enabled,
+            import_existing=import_existing,
+            mirror_structure=mirror_structure,
+        )
+        if not changes:
+            return current
+        return await self._repository.update(uid, changes, owner_id=owner_id)
+
+    def _validate_connection_mirror(self, current: object) -> None:
+        provider_type = getattr(current, "provider_type", None)
+        if provider_type is None and isinstance(current, dict):
+            provider_type = current.get("provider_type")
+        if not isinstance(provider_type, str):
+            raise ProviderValidationError("Connection is missing provider_type")
+        self._require_mirror_supported(provider_type)
+
+    @staticmethod
+    def _connection_changes(
+        *,
+        name: str | None,
+        enabled: bool | None,
+        import_existing: bool | None,
+        mirror_structure: bool | None,
+    ) -> dict[str, Any]:
         changes: dict[str, Any] = {}
         if name is not None:
             stripped = name.strip()
@@ -240,9 +299,7 @@ class ProviderConnectionService:
             changes["import_existing"] = import_existing
         if mirror_structure is not None:
             changes["mirror_structure"] = mirror_structure
-        if not changes:
-            return current
-        return await self._repository.update(uid, changes, owner_id=owner_id)
+        return changes
 
     async def delete(
         self,

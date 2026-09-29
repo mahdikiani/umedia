@@ -458,7 +458,8 @@ class MediaFileService(MediaFileSearchMixin):
         )
         if parent_id is not None and parent_connection_id is None:
             await self._files.update(
-                parent_id, {"provider_connection_id": picked},
+                parent_id,
+                {"provider_connection_id": picked},
             )
         return picked
 
@@ -832,11 +833,7 @@ class MediaFileService(MediaFileSearchMixin):
         records = await self._files.list_temporary_items(
             actor_user_id=actor_user_id,
         )
-        visible = [
-            record
-            for record in records
-            if can_read(record, actor_user_id)
-        ]
+        visible = [record for record in records if can_read(record, actor_user_id)]
         return await self._with_starred(
             visible,
             actor_user_id=actor_user_id,
@@ -971,7 +968,8 @@ class MediaFileService(MediaFileSearchMixin):
             )
         if dest_parent_id is not None:
             await self._writable_folder(
-                dest_parent_id, actor_user_id=actor_user_id,
+                dest_parent_id,
+                actor_user_id=actor_user_id,
             )
 
         if byte_copy:
@@ -982,11 +980,15 @@ class MediaFileService(MediaFileSearchMixin):
                 raise MediaFileValidationError(
                     f"File '{source.uid}' has no linked storage object",
                 )
-            chunks: list[bytes] = [chunk async for chunk in self._plugins.read_content(
-                source.provider_connection_id,
-                source.content_reference,
-                range_header=None,
-            ) if chunk]
+            chunks: list[bytes] = [
+                chunk
+                async for chunk in self._plugins.read_content(
+                    source.provider_connection_id,
+                    source.content_reference,
+                    range_header=None,
+                )
+                if chunk
+            ]
             dest_connection_id = None
             if dest_parent_id is not None:
                 dest_connection_id = await self._bound_connection(dest_parent_id)
@@ -998,6 +1000,7 @@ class MediaFileService(MediaFileSearchMixin):
                 content_type=source.content_type,
                 owner_id=actor_user_id,
                 is_admin=is_admin,
+                discard_failed_record=True,
             )
 
         if source.storage_object_uid is None:
@@ -1033,6 +1036,7 @@ class MediaFileService(MediaFileSearchMixin):
         content_type: str | None = None,
         owner_id: str,
         is_admin: bool = False,
+        discard_failed_record: bool = False,
     ) -> MediaFileRecord:
         """Upload: plugin write -> verify -> upsert StorageObject ->
         MediaFile + `primary` link.
@@ -1074,25 +1078,33 @@ class MediaFileService(MediaFileSearchMixin):
                 media_file_uid=record.uid,
             )
         except ValueError as error:
-            await self._files.update(
+            await self._handle_upload_failure(
                 record.uid,
-                {"status": "failed", "error": str(error)},
+                provider_connection_id,
+                error,
+                discard_failed_record=discard_failed_record,
             )
             raise MediaFileValidationError(str(error)) from error
 
+        plugin_resource: PluginResource | None = None
         try:
             plugin_resource = await self._plugins.create_resource(
                 provider_connection_id,
                 CreateResourceIn(
-                    name=name, type="file", parent_id=plugin_parent,
+                    name=name,
+                    type="file",
+                    parent_id=plugin_parent,
                 ),
                 content,
             )
             await self._verify(provider_connection_id, plugin_resource)
         except Exception as error:
-            await self._files.update(
+            await self._handle_upload_failure(
                 record.uid,
-                {"status": "failed", "error": str(error)},
+                provider_connection_id,
+                error,
+                discard_failed_record=discard_failed_record,
+                plugin_resource=plugin_resource,
             )
             raise MediaFileWriteFailedError(str(error)) from error
 
@@ -1132,6 +1144,36 @@ class MediaFileService(MediaFileSearchMixin):
             storage_object_uid=obj.uid,
         )
         return await self._files.update(record.uid, {"status": "completed"})
+
+    async def _handle_upload_failure(
+        self,
+        media_file_uid: str,
+        provider_connection_id: str | None,
+        error: Exception,
+        *,
+        discard_failed_record: bool,
+        plugin_resource: PluginResource | None = None,
+    ) -> None:
+        if not discard_failed_record:
+            await self._files.update(
+                media_file_uid,
+                {"status": "failed", "error": str(error)},
+            )
+            return
+        if plugin_resource is not None:
+            try:
+                await self._plugins.delete_resource(
+                    provider_connection_id,
+                    plugin_resource.id,
+                )
+            except ResourceNotFoundError:
+                pass
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "failed to remove unverified copied resource: %s",
+                    media_file_uid,
+                )
+        await self._files.hard_delete(media_file_uid)
 
     async def replace_content(
         self,
@@ -1290,7 +1332,8 @@ class MediaFileService(MediaFileSearchMixin):
             )
         if item_conn and not dest_conn:
             return await self._files.update(
-                new_parent.uid, {"provider_connection_id": item_conn},
+                new_parent.uid,
+                {"provider_connection_id": item_conn},
             )
         return new_parent
 
@@ -1506,7 +1549,8 @@ class MediaFileService(MediaFileSearchMixin):
             )
         mirror = bool(getattr(connection, "mirror_structure", False))
         root = await self._ensure_import_root(
-            connection, actor_user_id=actor_user_id,
+            connection,
+            actor_user_id=actor_user_id,
         )
 
         imported = 0

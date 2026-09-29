@@ -28,7 +28,8 @@ class MediaFile(BaseEntity):
     # denormalized hint; the StorageObject join remains the source of
     # truth for linked bytes.
     provider_connection_id: Mapped[str | None] = mapped_column(
-        nullable=True, index=True,
+        nullable=True,
+        index=True,
     )
     # Python attribute can't be named `metadata` (reserved by SQLAlchemy's
     # declarative base); the column itself is still named "metadata".
@@ -82,6 +83,26 @@ class LibraryTransfer(BaseEntity):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class OperationNotification(BaseEntity):
+    __tablename__ = "operation_notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "source_type",
+            "source_uid",
+            name="uq_operation_notification_source",
+        ),
+    )
+
+    owner_id: Mapped[str] = mapped_column(index=True)
+    operation: Mapped[str] = mapped_column()
+    item_name: Mapped[str] = mapped_column()
+    error: Mapped[str] = mapped_column(Text())
+    source_type: Mapped[str] = mapped_column()
+    source_uid: Mapped[str] = mapped_column()
+    read_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class MediaFileStar(BaseEntity):

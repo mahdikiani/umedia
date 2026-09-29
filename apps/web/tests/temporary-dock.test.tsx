@@ -386,6 +386,7 @@ describe("TemporaryDock", () => {
     expect(store.get(UMEDIA_FROM_TEMPORARY_MIME)).toBe("1");
     expect(JSON.parse(store.get(UMEDIA_FILE_IDS_MIME)!)).toEqual({
       sourceIds: ["stashed-1"],
+      sourceConnectionIds: [null],
       fromTemporary: true,
     });
   });

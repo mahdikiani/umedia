@@ -31,6 +31,12 @@ const connection = {
   last_error: null,
 };
 
+const telegramConnection = {
+  ...connection,
+  provider_type: "telegram",
+  name: "Telegram archive",
+};
+
 const placement = {
   policy: "default" as const,
   default_connection_id: "provider-1",
@@ -148,6 +154,33 @@ describe("storage settings", () => {
         }),
       );
     });
+  });
+
+  it("disables folder mirroring for Telegram while keeping import available", async () => {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers")) return jsonResponse([telegramConnection]);
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+
+    const mirrorBox = await screen.findByRole("checkbox", {
+      name: /Mirror folder structure/i,
+    });
+    expect(mirrorBox).toBeDisabled();
+    expect(
+      screen.getByText(/Telegram channels are flat and do not support folders/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /Import existing objects/i }),
+    ).toBeEnabled();
   });
 
   it("lets members manage their own storage connections", async () => {

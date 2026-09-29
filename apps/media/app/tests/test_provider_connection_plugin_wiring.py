@@ -4,11 +4,15 @@ connection through the live HTTP app round-trips through an actual spawned
 plugin subprocess over its Unix socket.
 """
 
+import asyncio
 import os
 from pathlib import Path
 
 import httpx
 import pytest
+
+from apps.provider_connections.telegram_login import TelegramLoginError
+from server.server import app as fastapi_app
 
 
 async def _authenticated(client: httpx.AsyncClient) -> None:
@@ -115,7 +119,8 @@ async def test_patch_renames_and_disables_a_connection(
     uid = created.json()["uid"]
 
     patched = await client.patch(
-        f"/providers/{uid}", json={"name": "After rename", "enabled": False},
+        f"/providers/{uid}",
+        json={"name": "After rename", "enabled": False},
     )
 
     assert patched.status_code == 200, patched.text
@@ -139,8 +144,13 @@ async def test_patch_missing_connection_is_404(client: httpx.AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
-async def test_provider_types_expose_connect_flow(client: httpx.AsyncClient) -> None:
+async def test_provider_types_expose_connect_flow(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _authenticated(client)
+    monkeypatch.setattr(fastapi_app.state.settings, "telegram_api_id", "")
+    monkeypatch.setattr(fastapi_app.state.settings, "telegram_api_hash", "")
 
     response = await client.get("/provider-types")
 
@@ -150,6 +160,102 @@ async def test_provider_types_expose_connect_flow(client: httpx.AsyncClient) -> 
     assert by_id["s3"]["connect_flow"] == "token"
     assert by_id["google_drive"]["connect_flow"] == "oauth"
     assert by_id["telegram"]["connect_flow"] == "session"
+    assert by_id["telegram"]["available"] is False
+    assert "UMEDIA_TELEGRAM_API_ID" in by_id["telegram"]["unavailable_reason"]
+    assert "UMEDIA_TELEGRAM_API_HASH" in by_id["telegram"]["unavailable_reason"]
+    assert by_id["telegram"]["fields"] == []
+
+    rejected = await client.post(
+        "/providers",
+        json={
+            "provider_type": "telegram",
+            "name": "Archive channel",
+            "config": {"channel_id": "-100123", "session": "session"},
+        },
+    )
+    assert rejected.status_code == 422
+    assert "UMEDIA_TELEGRAM_API_ID" in rejected.text
+
+
+@pytest.mark.asyncio
+async def test_telegram_login_api_advances_to_two_step_password(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _authenticated(client)
+    login_service = fastapi_app.state.telegram_login_service
+
+    async def start(**_values: object) -> dict[str, str]:
+        await asyncio.sleep(0)
+        return {"login_id": "login-1", "step": "code"}
+
+    async def advance(**_values: object) -> tuple[dict[str, str], None]:
+        await asyncio.sleep(0)
+        return {"step": "password"}, None
+
+    monkeypatch.setattr(login_service, "start", start)
+    monkeypatch.setattr(login_service, "advance", advance)
+
+    started = await client.post(
+        "/providers/telegram/login/start",
+        json={
+            "name": "Archive channel",
+            "phone": "+1234567890",
+            "channel_ref": "@channelname",
+        },
+    )
+    assert started.status_code == 200, started.text
+    assert started.json() == {
+        "login_id": "login-1",
+        "step": "code",
+        "connection": None,
+    }
+
+    verified = await client.post(
+        "/providers/telegram/login/login-1/code",
+        json={"value": "12345"},
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json() == {"login_id": None, "step": "password", "connection": None}
+
+
+@pytest.mark.asyncio
+async def test_telegram_login_api_returns_specific_code_error(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _authenticated(client)
+    login_service = fastapi_app.state.telegram_login_service
+
+    async def start(**_values: object) -> dict[str, str]:
+        await asyncio.sleep(0)
+        return {"login_id": "pending-login", "step": "code"}
+
+    async def advance(**_values: object) -> tuple[dict[str, str], None]:
+        await asyncio.sleep(0)
+        raise TelegramLoginError(
+            400,
+            "Telegram login code is invalid or expired. Cancel and request a new code.",
+        )
+
+    monkeypatch.setattr(login_service, "start", start)
+    monkeypatch.setattr(login_service, "advance", advance)
+
+    started = await client.post(
+        "/providers/telegram/login/start",
+        json={"name": "Archive", "phone": "+1234567890", "channel_ref": "@channel"},
+    )
+    assert started.status_code == 200
+
+    rejected = await client.post(
+        "/providers/telegram/login/pending-login/code",
+        json={"value": "12345"},
+    )
+
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == (
+        "Telegram login code is invalid or expired. Cancel and request a new code."
+    )
 
 
 @pytest.mark.asyncio
@@ -207,12 +313,14 @@ async def test_user_cannot_see_or_edit_anothers_connection(
         "password": "a secure member password",
     }
     created_user = await client.post(
-        "/users", json={**member_credentials, "role": "user"},
+        "/users",
+        json={**member_credentials, "role": "user"},
     )
     assert created_user.status_code == 201, created_user.text
 
     member = httpx.AsyncClient(
-        transport=client._transport, base_url=str(client.base_url),
+        transport=client._transport,
+        base_url=str(client.base_url),
     )
     async with member:
         login = await member.post("/auth/sessions", json=member_credentials)
@@ -237,9 +345,12 @@ async def test_user_cannot_see_or_edit_anothers_connection(
         assert blocked_local.status_code == 403
         assert blocked_local.json()["error_code"] == "local_admin_required"
 
-        assert (await member.patch(
-            f"/providers/{uid}", json={"name": "Hijack"},
-        )).status_code == 404
+        assert (
+            await member.patch(
+                f"/providers/{uid}",
+                json={"name": "Hijack"},
+            )
+        ).status_code == 404
         assert (await member.delete(f"/providers/{uid}")).status_code == 404
         assert (await member.get(f"/providers/{uid}/objects")).status_code == 404
         assert (await member.get(f"/providers/{uid}/sync")).status_code == 404
@@ -263,14 +374,13 @@ async def test_non_admin_cannot_sync_or_browse_owned_local_connection(
         "password": "a secure member password",
     }
     created_user = await client.post(
-        "/users", json={**member_credentials, "role": "user"},
+        "/users",
+        json={**member_credentials, "role": "user"},
     )
     assert created_user.status_code == 201, created_user.text
     member_uid = created_user.json()["uid"]
 
-    library = (
-        Path(os.environ["UMEDIA_DATA_DIR"]) / "storage" / "leftover-local-library"
-    )
+    library = Path(os.environ["UMEDIA_DATA_DIR"]) / "storage" / "leftover-local-library"
     created = await client.post(
         "/providers",
         json={
@@ -292,7 +402,8 @@ async def test_non_admin_cannot_sync_or_browse_owned_local_connection(
     assert reassigned.owner_id == member_uid
 
     member = httpx.AsyncClient(
-        transport=client._transport, base_url=str(client.base_url),
+        transport=client._transport,
+        base_url=str(client.base_url),
     )
     async with member:
         login = await member.post("/auth/sessions", json=member_credentials)

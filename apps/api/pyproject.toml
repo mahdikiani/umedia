@@ -15,7 +15,7 @@ dependencies = [
     "pydantic-settings",
     "pyjwt",
     "sqlalchemy",
-    "telethon",
+    "kurigram>=2.2.26",
     "uvicorn[standard]",
 ]
 

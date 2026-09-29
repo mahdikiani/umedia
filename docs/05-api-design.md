@@ -76,6 +76,13 @@ OAuth (`/providers/oauth/*`).
 | `DELETE` | `/access-keys/{uid}` | revoke a key owned by the current user; missing or unowned keys return 404 |
 | `GET` | `/access-keys/s3` | public S3 endpoint, region, bucket, and path-style connection settings |
 
+### Notifications
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/notifications` | caller's latest failed asynchronous operations (max 100), newest first |
+| `PATCH` | `/notifications/{uid}/read` | mark one owned notification as read; missing or unowned ids return 404 |
+
 ### Providers
 
 Connections are **per-user**: `GET`/`POST`/`PATCH`/`DELETE /providers` only
@@ -86,9 +93,9 @@ for them. Missing or unowned connection ids return `404` (no existence leak).
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/provider-types` | catalog sourced from loaded plugin manifests (id, name, capabilities, `config_fields`); non-admins do not see `local` |
+| `GET` | `/provider-types` | catalog sourced from loaded plugin manifests (id, name, capabilities, `config_fields`, `available`, optional `unavailable_reason`); server-managed fields are omitted; non-admins do not see `local` |
 | `GET` | `/providers` | list the caller's `ProviderConnection`s (no credentials; includes `owner_id`) |
-| `POST` | `/providers` | any authenticated user; sets `owner_id` from the session; validate config, test-connect through the plugin, encrypt, persist (`local` → admin only) |
+| `POST` | `/providers` | any authenticated user; sets `owner_id` from the session; validate config, test-connect through the plugin, encrypt, persist (`local` → admin only); reject provider types whose required server configuration is missing |
 | `PATCH` | `/providers/{uid}` | owner-only: enable/disable, rename, toggle `import_existing`/`mirror_structure` |
 | `DELETE` | `/providers/{uid}` | owner-only soft-delete; bound/synced MediaFiles go to Trash; StorageObjects and remote bytes kept; placement refs cleared |
 | `GET` | `/providers/{uid}/objects?parent_ref=` | owner-only browse of the connection's physical StorageObject index (from SQLite, never a live provider call); paginated — see "Pagination" below |
@@ -97,6 +104,10 @@ for them. Missing or unowned connection ids return `404` (no existence leak).
 
 | `POST` | `/providers/oauth/start` | begin Google Drive, OneDrive, or Dropbox OAuth paste flow — returns `{authorization_url, state, redirect_uri}`; requires that provider's `UMEDIA_*_OAUTH_CLIENT_ID` and `UMEDIA_*_OAUTH_CLIENT_SECRET` (422 if unset); authenticated |
 | `POST` | `/providers/oauth/complete` | paste redirect URL / code / token JSON → exchange if needed → create `ProviderConnection` (same response shape as `POST /providers`) |
+| `POST` | `/providers/telegram/login/start` | send a Telegram login code for a phone number and channel name/`@username` (`channel_ref`); returns an owner-bound, five-minute `login_id`; after sign-in Kurigram resolves the channel and checks admin access |
+| `POST` | `/providers/telegram/login/{login_id}/code` | verify the code; returns the `password` step when Telegram requires 2FA, otherwise creates and returns the encrypted connection |
+| `POST` | `/providers/telegram/login/{login_id}/password` | verify Telegram 2FA password and create the encrypted connection |
+| `DELETE` | `/providers/telegram/login/{login_id}` | cancel an unfinished login and close its temporary client |
 
 The older `{uid}/oauth/callback` server-side redirect shape is **not** used;
 Google never needs to reach the UMedia host.
@@ -127,9 +138,10 @@ Listing reads SQLite only — it never waits on provider I/O or sync.
 | `POST` | `/files/{id}/temporary-link` | mint a temporary signed URL (MANAGE, same gate as sharing), HMAC'd with the caller's own access key (`user_access_keys`, doc 04). Body `{"expires_in": seconds}` (default 3600, min 60, max 604800); returns `{url, key_id, expires, expires_at}` — see "Direct-link alias" below |
 | `DELETE` | `/files/{id}` | soft-delete (two-step; `?permanent=true` removes the library row — StorageObject and remote bytes always survive, doc 11 v1 rule) |
 | `POST` | `/files/{id}/restore` | undo a soft-delete |
-| `POST` | `/files/transfers` | enqueue a library **move** or **copy** job (`TransferCreateIn`: `operation`, `source_ids` ≥1, optional `dest_parent_id`, `conflict`=`rename`\|`skip`); **always 202** with `TransferOut` (even for one item). Work runs in the background; poll `GET /files/transfers/{uid}` for progress (`progress_pct`, `done_items`/`total_items`, `status` queued→running→completed\|partial\|failed). Same-storage copy **shares** the StorageObject; cross-storage copy byte-duplicates via the plugin. Cross-storage move = copy then soft-delete the source MediaFile (bytes stay). |
+| `POST` | `/files/transfers` | enqueue a library **move** or **copy** job (`TransferCreateIn`: `operation`, `source_ids` ≥1, optional `dest_parent_id`, `conflict`=`rename`\|`skip`); **always 202** with `TransferOut` (even for one item). Work runs in the background; poll `GET /files/transfers/{uid}` for progress (`progress_pct`, `done_items`/`total_items`, `status` queued→running→completed\|partial\|failed\|cancelling\|cancelled). Same-storage copy **shares** the StorageObject; cross-storage copy byte-duplicates via the plugin. Cross-storage move = copy then soft-delete the source MediaFile (bytes stay). |
 | `GET` | `/files/transfers` | the caller's recent transfer jobs (newest first, limit 50) |
 | `GET` | `/files/transfers/{uid}` | one job; **404** if missing or not owned |
+| `POST` | `/files/transfers/{uid}/cancel` | request cancellation; queued jobs cancel immediately, running jobs finish the current provider operation, then remove destination items created by the job and restore moved sources before reaching `cancelled`; **202** with the latest `TransferOut` (poll `GET` while status is `cancelling`) |
 | `POST` | `/files/temporary` | add MediaFile pointers to the caller's Temporary clipboard (`{"media_file_ids": [...]}`); idempotent, READ-gated, and never starts a transfer or creates storage |
 | `GET` | `/files/temporary` | list the caller's readable Temporary pointers as MediaFiles; missing or inaccessible targets are skipped |
 | `DELETE` | `/files/temporary/{media_file_id}` | remove only the caller's pointer; the MediaFile and StorageObject are unchanged |

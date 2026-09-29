@@ -8,10 +8,13 @@ import { isTransferInFlight, type TransferJob } from "@/lib/api";
 
 type TransferProgressPanelProps = {
   jobs: TransferJob[];
+  onCancel: (uid: string) => void;
   onDismiss: (uid: string) => void;
 };
 
 function statusLabel(job: TransferJob): string {
+  if (job.status === "cancelling") return "Cancelling…";
+  if (job.status === "cancelled") return "Cancelled";
   if (isTransferInFlight(job.status)) {
     return `${job.progress_pct}%`;
   }
@@ -23,6 +26,7 @@ function statusLabel(job: TransferJob): string {
 
 export function TransferProgressPanel({
   jobs,
+  onCancel,
   onDismiss,
 }: TransferProgressPanelProps) {
   if (jobs.length === 0) return null;
@@ -51,6 +55,16 @@ export function TransferProgressPanel({
                 <span className="text-muted-foreground">
                   {statusLabel(job)}
                 </span>
+                {job.status === "queued" || job.status === "running" ? (
+                  <Button
+                    aria-label="Cancel transfer"
+                    onClick={() => onCancel(job.uid)}
+                    size="xs"
+                    variant="ghost"
+                  >
+                    Cancel
+                  </Button>
+                ) : null}
                 {!inFlight ? (
                   <Button
                     aria-label="Dismiss transfer"

@@ -28,7 +28,10 @@ class FakeRepository:
         return record
 
     async def get(
-        self, uid: str, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
     ) -> dict | None:
         row = self._rows.get(uid)
         if row is None:
@@ -38,7 +41,11 @@ class FakeRepository:
         return row
 
     async def update(
-        self, uid: str, changes: dict, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        changes: dict,
+        *,
+        owner_id: str | None = None,
     ) -> dict | None:
         current = await self.get(uid, owner_id=owner_id)
         if current is None:
@@ -47,7 +54,10 @@ class FakeRepository:
         return self._rows[uid]
 
     async def delete(
-        self, uid: str, *, owner_id: str | None = None,
+        self,
+        uid: str,
+        *,
+        owner_id: str | None = None,
     ) -> bool:
         current = await self.get(uid, owner_id=owner_id)
         if current is None:
@@ -70,7 +80,22 @@ TELEGRAM_MANIFEST = PluginManifest(
     name="Telegram",
     description="A Telegram channel.",
     entrypoint=["python", "-m", "plugins.telegram.main"],
-    config_fields=(ConfigField(key="api_id", label="API ID"),),
+    config_fields=(
+        ConfigField(
+            key="api_id",
+            label="API ID",
+            server_managed=True,
+            environment_variable="UMEDIA_TELEGRAM_API_ID",
+        ),
+        ConfigField(
+            key="api_hash",
+            label="API hash",
+            server_managed=True,
+            environment_variable="UMEDIA_TELEGRAM_API_HASH",
+        ),
+        ConfigField(key="channel_id", label="Channel ID"),
+        ConfigField(key="session", label="Session", secret=True),
+    ),
     capabilities=("list", "read", "write", "delete", "copy"),
 )
 
@@ -84,7 +109,8 @@ class FakeRegistry:
 
 
 async def passing_connect(  # noqa: RUF029 -- matches the real Connector's async signature
-    _manifest: PluginManifest, _config: dict,
+    _manifest: PluginManifest,
+    _config: dict,
 ) -> None:
     return None
 
@@ -92,6 +118,7 @@ async def passing_connect(  # noqa: RUF029 -- matches the real Connector's async
 def _service(
     repository: FakeRepository | None = None,
     manifests: dict[str, PluginManifest] | None = None,
+    server_configs: dict[str, dict[str, str]] | None = None,
 ) -> tuple[ProviderConnectionService, FakeRepository]:
     repo = repository or FakeRepository()
     return ProviderConnectionService(
@@ -99,7 +126,73 @@ def _service(
         FakeCipher(),
         FakeRegistry(manifests or {"local": LOCAL_MANIFEST}),
         passing_connect,
+        server_configs=server_configs,
     ), repo
+
+
+def test_telegram_is_unavailable_without_server_api_credentials() -> None:
+    service, _ = _service(manifests={"telegram": TELEGRAM_MANIFEST})
+
+    available, reason = service.availability("telegram")
+
+    assert available is False
+    assert reason is not None
+    assert "UMEDIA_TELEGRAM_API_ID" in reason
+    assert "UMEDIA_TELEGRAM_API_HASH" in reason
+
+
+@pytest.mark.asyncio
+async def test_telegram_connection_is_rejected_without_server_api_credentials() -> None:
+    service, repository = _service(manifests={"telegram": TELEGRAM_MANIFEST})
+
+    with pytest.raises(ProviderValidationError, match="UMEDIA_TELEGRAM_API_ID"):
+        await service.create(
+            provider_type="telegram",
+            name="Archive channel",
+            config={"channel_id": "-100123", "session": "session"},
+            owner_id="user-1",
+        )
+
+    assert repository.created is None
+
+
+@pytest.mark.asyncio
+async def test_telegram_creation_injects_server_credentials() -> None:
+    service, repository = _service(
+        manifests={"telegram": TELEGRAM_MANIFEST},
+        server_configs={
+            "telegram": {
+                "api_id": "12345",
+                "api_hash": "server-api-hash",
+            },
+        },
+    )
+    connected: dict[str, object] = {}
+
+    async def connect(_manifest: PluginManifest, config: dict) -> None:
+        await passing_connect(_manifest, config)
+        connected.update(config)
+
+    service._connect = connect
+    await service.create(
+        provider_type="telegram",
+        name="Archive channel",
+        config={
+            "api_id": "spoofed",
+            "api_hash": "spoofed",
+            "channel_id": "-100123",
+            "session": "kurigram-session",
+        },
+        owner_id="user-1",
+    )
+
+    assert connected == {
+        "api_id": "12345",
+        "api_hash": "server-api-hash",
+        "channel_id": "-100123",
+        "session": "kurigram-session",
+    }
+    assert repository.created is not None
 
 
 @pytest.mark.asyncio
@@ -124,13 +217,16 @@ async def test_create_connection_encrypts_secrets() -> None:
 @pytest.mark.asyncio
 async def test_create_sets_owner_id_from_caller() -> None:
     service, repository = _service(
+        server_configs={
+            "telegram": {"api_id": "12345", "api_hash": "server-api-hash"},
+        },
         manifests={"telegram": TELEGRAM_MANIFEST},
     )
 
     await service.create(
         provider_type="telegram",
         name="Channel",
-        config={"api_id": "1"},
+        config={"channel_id": "-100123", "session": "kurigram-session"},
         owner_id="user-42",
         is_admin=False,
     )
@@ -174,22 +270,42 @@ async def test_admin_can_create_local() -> None:
 
 def test_connection_usable_by_blocks_local_for_non_admin_owner() -> None:
     local = SimpleNamespace(owner_id="user-1", provider_type="local")
-    assert connection_usable_by(
-        local, actor_user_id="user-1", is_admin=False,
-    ) is False
-    assert connection_usable_by(
-        local, actor_user_id="user-1", is_admin=True,
-    ) is True
+    assert (
+        connection_usable_by(
+            local,
+            actor_user_id="user-1",
+            is_admin=False,
+        )
+        is False
+    )
+    assert (
+        connection_usable_by(
+            local,
+            actor_user_id="user-1",
+            is_admin=True,
+        )
+        is True
+    )
 
 
 def test_connection_usable_by_blocks_unowned_connections() -> None:
     remote = SimpleNamespace(owner_id="owner-a", provider_type="telegram")
-    assert connection_usable_by(
-        remote, actor_user_id="owner-b", is_admin=True,
-    ) is False
-    assert connection_usable_by(
-        remote, actor_user_id="owner-a", is_admin=False,
-    ) is True
+    assert (
+        connection_usable_by(
+            remote,
+            actor_user_id="owner-b",
+            is_admin=True,
+        )
+        is False
+    )
+    assert (
+        connection_usable_by(
+            remote,
+            actor_user_id="owner-a",
+            is_admin=False,
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -253,9 +369,14 @@ async def test_update_for_other_owner_returns_none() -> None:
         is_admin=True,
     )
 
-    assert await service.update(
-        created["uid"], owner_id="other-user", name="Hijack",
-    ) is None
+    assert (
+        await service.update(
+            created["uid"],
+            owner_id="other-user",
+            name="Hijack",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -298,7 +419,12 @@ async def test_update_missing_connection_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_create_rejects_mirror_structure_without_move_capability() -> None:
-    service, _ = _service(manifests={"telegram": TELEGRAM_MANIFEST})
+    service, _ = _service(
+        manifests={"telegram": TELEGRAM_MANIFEST},
+        server_configs={
+            "telegram": {"api_id": "12345", "api_hash": "server-api-hash"},
+        },
+    )
 
     with pytest.raises(ProviderValidationError, match="mirror_structure"):
         await service.create(
@@ -314,18 +440,23 @@ async def test_create_rejects_mirror_structure_without_move_capability() -> None
 async def test_update_rejects_enabling_mirror_structure_without_move() -> None:
     service, _ = _service(
         manifests={"telegram": TELEGRAM_MANIFEST, "local": LOCAL_MANIFEST},
+        server_configs={
+            "telegram": {"api_id": "12345", "api_hash": "server-api-hash"},
+        },
     )
     created = await service.create(
         provider_type="telegram",
         name="Channel",
-        config={"api_id": "1"},
+        config={"channel_id": "-100123", "session": "kurigram-session"},
         owner_id="user-1",
         mirror_structure=False,
     )
 
     with pytest.raises(ProviderValidationError, match="mirror_structure"):
         await service.update(
-            created["uid"], owner_id="user-1", mirror_structure=True,
+            created["uid"],
+            owner_id="user-1",
+            mirror_structure=True,
         )
 
 

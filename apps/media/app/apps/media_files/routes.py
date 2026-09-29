@@ -17,6 +17,7 @@ import logging
 import re
 from typing import Annotated, Literal
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import (
     APIRouter,
@@ -53,6 +54,7 @@ from .content_type import serve_content_type
 from .errors import MediaFileNotFoundError, MediaFileValidationError
 from .factory import (
     build_media_file_service,
+    build_notification_service_from_state,
     build_storage_object_service,
     build_transfer_service,
     run_inbound_sync,
@@ -155,9 +157,7 @@ def _metadata_headers(
         "Accept-Ranges": "bytes",
         "Last-Modified": record.updated_at.strftime("%a, %d %b %Y %H:%M:%S GMT"),
         "Cache-Control": (
-            _PUBLIC_LINK_CACHE_CONTROL
-            if shared_cacheable
-            else _PRIVATE_CACHE_CONTROL
+            _PUBLIC_LINK_CACHE_CONTROL if shared_cacheable else _PRIVATE_CACHE_CONTROL
         ),
     }
     if record.content_hash:
@@ -221,9 +221,7 @@ async def _content_response(
     headers = _metadata_headers(
         record,
         attachment=download,
-        shared_cacheable=(
-            via_public_link and record.public_permission == "read"
-        ),
+        shared_cacheable=(via_public_link and record.public_permission == "read"),
     )
     if bounds is None:
         return StreamingResponse(stream, status_code=200, headers=headers)
@@ -271,9 +269,7 @@ async def list_files(
             offset=offset,
         )
     else:
-        effective_order = order or (
-            "desc" if sort in {"updated_at", "size"} else "asc"
-        )
+        effective_order = order or ("desc" if sort in {"updated_at", "size"} else "asc")
         page = await service.list_children(
             parent_id,
             actor_user_id=actor_user_id,
@@ -303,7 +299,8 @@ async def library_stats(request: Request) -> VolumeStatsOut:
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_transfer(
-    request: Request, body: TransferCreateIn,
+    request: Request,
+    body: TransferCreateIn,
 ) -> TransferOut:
     """Enqueue a library move/copy job (always 202, even for one item)."""
     record = await build_transfer_service(request).create_and_enqueue(
@@ -331,7 +328,21 @@ async def list_transfers(request: Request) -> list[TransferOut]:
 @router.get("/transfers/{uid}", response_model=TransferOut)
 async def get_transfer(uid: str, request: Request) -> TransferOut:
     record = await build_transfer_service(request).get(
-        uid, actor_user_id=_actor(request),
+        uid,
+        actor_user_id=_actor(request),
+    )
+    return TransferOut.from_record(record)
+
+
+@router.post(
+    "/transfers/{uid}/cancel",
+    response_model=TransferOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def cancel_transfer(uid: str, request: Request) -> TransferOut:
+    record = await build_transfer_service(request).cancel(
+        uid,
+        actor_user_id=_actor(request),
     )
     return TransferOut.from_record(record)
 
@@ -649,6 +660,7 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
     The reconcile itself lives in `run_inbound_sync` so the interval
     poller walks the same path.
     """
+    job_uid = uuid4().hex
 
     async def _run() -> None:
         try:
@@ -668,7 +680,20 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
                 connection_uid,
                 result,
             )
-        except Exception:
+        except Exception as error:
+            try:
+                await build_notification_service_from_state(
+                    request.app.state,
+                ).record_failure(
+                    owner_id=actor_uid,
+                    operation="sync",
+                    item_name=connection_uid,
+                    error=str(error),
+                    source_type="provider_sync",
+                    source_uid=job_uid,
+                )
+            except Exception:
+                logging.exception("Could not persist failed provider sync notification")
             logging.exception(
                 "Sync for provider connection '%s' failed", connection_uid
             )

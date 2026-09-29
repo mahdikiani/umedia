@@ -1,9 +1,17 @@
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import FilesPage from "@/app/(dashboard)/files/page";
+import { UMEDIA_FILE_IDS_MIME } from "@/lib/umedia-dnd";
 
 const mockSearchParams = new URLSearchParams();
 const mockRouter = { push: vi.fn(), replace: vi.fn() };
@@ -160,6 +168,105 @@ describe("dual pane", () => {
       expect(name).toHaveClass("truncate");
       expect(name).toHaveAttribute("title", longName);
     }
+  });
+
+  it("balances the horizontal padding at both outer table edges", async () => {
+    localStorage.setItem("umedia.files.dualPane", "1");
+    render(<FilesPage />);
+
+    const tables = await screen.findAllByRole("table");
+    for (const table of tables) {
+      expect(table.querySelector("thead th:first-child")).toHaveClass("px-4");
+      expect(table.querySelector("tbody tr:first-child td:first-child")).toHaveClass(
+        "px-4",
+      );
+      expect(table.querySelector("tbody tr:first-child td:last-child")).toHaveClass(
+        "px-4",
+        "text-end",
+      );
+    }
+  });
+
+  it.each([
+    ["same storage", "provider-1", "move"],
+    ["different storage", "provider-2", "copy"],
+  ] as const)("uses %s operation for a folder drop", async (_, targetStorage, operation) => {
+    localStorage.setItem("umedia.files.dualPane", "1");
+    const requestBodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/providers")) return jsonResponse(connections);
+        if (url.includes("/files/temporary")) return jsonResponse([]);
+        if (url.includes("/files/transfers") && init?.method === "POST") {
+          requestBodies.push(JSON.parse(String(init.body)));
+          return jsonResponse({
+            uid: "transfer-1",
+            operation,
+            status: "queued",
+            source_ids: [longNamedFile.uid],
+            dest_parent_id: folder.uid,
+            total_items: 1,
+            done_items: 0,
+            failed_items: 0,
+            progress_pct: 0,
+            current_name: null,
+            error: null,
+            created_at: "2026-08-11T00:00:00Z",
+            started_at: null,
+            finished_at: null,
+          });
+        }
+        if (url.includes("/files/transfers")) return jsonResponse([]);
+        if (url.includes("/files?")) {
+          return jsonResponse(pageOf([
+            { ...folder, provider_connection_id: targetStorage },
+            longNamedFile,
+          ]));
+        }
+        if (url.match(/\/files\/[^/?]+$/)) {
+          const uid = url.split("/").pop();
+          if (uid === folder.uid) {
+            return jsonResponse({ ...folder, provider_connection_id: targetStorage });
+          }
+          if (uid === longNamedFile.uid) return jsonResponse(longNamedFile);
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }),
+    );
+
+    render(<FilesPage />);
+    const source = within(
+      await screen.findByTestId("file-pane-primary"),
+    ).getByText(longName);
+    const target = within(
+      await screen.findByTestId("file-pane-secondary"),
+    ).getByText("Movies");
+    const store = new Map<string, string>();
+    const dataTransfer = {
+      get types() {
+        return Array.from(store.keys());
+      },
+      getData: (type: string) => store.get(type) ?? "",
+      setData: (type: string, value: string) => store.set(type, value),
+      effectAllowed: "uninitialized",
+      dropEffect: "none",
+    };
+
+    fireEvent.dragStart(source, { dataTransfer });
+    expect(JSON.parse(store.get(UMEDIA_FILE_IDS_MIME)!)).toMatchObject({
+      sourceIds: [longNamedFile.uid],
+      sourceConnectionIds: ["provider-1"],
+    });
+    fireEvent.drop(target, { dataTransfer });
+
+    await waitFor(() => expect(requestBodies).toHaveLength(1));
+    expect(requestBodies[0]).toEqual({
+      operation,
+      source_ids: [longNamedFile.uid],
+      dest_parent_id: folder.uid,
+    });
   });
 
   it("resets a missing secondary folder to root so the right pane is not blank", async () => {

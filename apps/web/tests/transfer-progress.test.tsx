@@ -37,7 +37,11 @@ function TrackerHost({ onSettled }: { onSettled?: () => void }) {
       >
         Start
       </button>
-      <TransferProgressPanel jobs={jobs} onDismiss={vi.fn()} />
+      <TransferProgressPanel
+        jobs={jobs}
+        onCancel={vi.fn()}
+        onDismiss={vi.fn()}
+      />
     </div>
   );
 }
@@ -51,6 +55,36 @@ describe("transfer progress", () => {
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  it("lets the user cancel an active transfer", () => {
+    const onCancel = vi.fn();
+    render(
+      <TransferProgressPanel
+        jobs={[job()]}
+        onCancel={onCancel}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel transfer" }));
+
+    expect(onCancel).toHaveBeenCalledWith("job-1");
+  });
+
+  it("shows cancellation in progress and hides the cancel action", () => {
+    render(
+      <TransferProgressPanel
+        jobs={[job({ status: "cancelling" })]}
+        onCancel={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Cancelling…")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Cancel transfer" }),
+    ).not.toBeInTheDocument();
   });
 
   it("polls and shows progress percent", async () => {

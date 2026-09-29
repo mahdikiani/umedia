@@ -16,6 +16,7 @@ dependencies = [
     "greenlet>=3.0.0",
     "httpx>=0.28.1",
     "json-advanced>=0.12.11",
+    "kurigram>=2.2.26",
     "pydantic[email]>=2.12.2",
     "python-dotenv>=1.1.1",
     "python-magic>=0.4.27",
@@ -24,7 +25,6 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.68.0",
     "singleton-package>=0.8.2",
     "sqlalchemy>=2.0.0",
-    "telethon>=1.36.0",
     # Pinned exact, not a floor (`==`, not `>=`): no git tags/releases exist
     # upstream, PyPI is the only source of truth for what shipped, and the
     # maintainer auto-publishes on every merge to main (see its own

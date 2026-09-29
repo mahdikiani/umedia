@@ -26,6 +26,8 @@ class ConfigField(BaseModel):
     required: bool = True
     secret: bool = False
     placeholder: str | None = None
+    server_managed: bool = False
+    environment_variable: str | None = None
 
 
 class PluginManifest(BaseModel):

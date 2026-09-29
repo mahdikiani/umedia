@@ -128,6 +128,47 @@ class PluginClient:
         """
         await self._request("POST", "/connect", retry=False, config=config)
 
+    async def telegram_login_start(
+        self,
+        config: dict[str, Any],
+        *,
+        login_id: str,
+        phone: str,
+        channel_ref: str,
+    ) -> dict[str, str]:
+        response = await self._request(
+            "POST",
+            "/auth/start",
+            retry=False,
+            config=config,
+            json={"login_id": login_id, "phone": phone, "channel_ref": channel_ref},
+        )
+        return response.json()
+
+    async def telegram_login_step(
+        self,
+        config: dict[str, Any],
+        *,
+        login_id: str,
+        step: str,
+        value: str,
+    ) -> dict[str, str]:
+        response = await self._request(
+            "POST",
+            f"/auth/{encode_resource_id(login_id)}/{step}",
+            retry=False,
+            config=config,
+            json={step: value},
+        )
+        return response.json()
+
+    async def telegram_login_cancel(self, login_id: str) -> None:
+        await self._request(
+            "DELETE",
+            f"/auth/{encode_resource_id(login_id)}",
+            retry=False,
+        )
+
     async def status(self) -> StatusOut:
         """`GET /status` -- plugin-reported backend health. Retried."""
         response = await self._request("GET", "/status", retry=True)
@@ -142,7 +183,11 @@ class PluginClient:
         """`GET /resources?parent_id=`. Retried (idempotent read)."""
         params = {"parent_id": parent_id} if parent_id is not None else {}
         response = await self._request(
-            "GET", "/resources", retry=True, config=config, params=params,
+            "GET",
+            "/resources",
+            retry=True,
+            config=config,
+            params=params,
         )
         return [Resource.model_validate(item) for item in response.json()]
 
@@ -185,8 +230,7 @@ class PluginClient:
                 ):
                     if response.status_code >= 400:
                         raise PluginRPCError(
-                            f"Plugin content read returned "
-                            f"{response.status_code}",
+                            f"Plugin content read returned {response.status_code}",
                             status_code=response.status_code,
                         )
                     async for chunk in response.aiter_bytes():

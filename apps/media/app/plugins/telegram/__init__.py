@@ -1,1 +1,1 @@
-"""Telegram provider plugin (MTProto, via Telethon)."""
+"""Telegram provider plugin (MTProto, via Kurigram)."""
