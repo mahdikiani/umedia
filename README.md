@@ -1,69 +1,42 @@
 # UMedia
 
-**A self-hosted Universal Data Layer.**
+**A self-hosted media library for files spread across storage providers.**
 
-UMedia connects your storage and messaging providers — local disks, S3,
-Google Drive, Telegram, and more — behind one unified, provider-agnostic API.
-It is a **resource abstraction layer, not a filesystem**: a Telegram message
-is a valid resource just like an S3 object or a local file, folders are
-optional, and the core never assumes everything is hierarchical.
+UMedia brings local storage, S3-compatible object stores, and selected cloud and messaging providers into one library you can host yourself. It is open source under the MIT License.
 
-- **Provider agnostic** — every external service is an isolated plugin;
-  connect as many instances of the same provider type as you want (e.g. two
-  S3 accounts, a personal and a work Google Drive).
-- **Plugin based** — providers run as supervised subprocesses, reachable
-  from the core only over a local REST contract. A provider can misbehave
-  without taking the core down or reading its database.
-- **Security first** — credentials are encrypted at rest, decrypted only in
-  the trusted core, and never touch a plugin's disk.
-- **API first** — every capability is a REST endpoint (see
-  [`docs/05-api-design.md`](docs/05-api-design.md)); the frontend is just
-  another client.
-- **Self-hostable** — one `docker compose up`, one SQLite database, no
-  external services required.
+**Status: early beta.** Provider support and verification differ. Check the [provider matrix](https://mahdikiani.github.io/umedia/providers/) before using UMedia with important data.
 
-## Documentation
+- [Documentation](https://mahdikiani.github.io/umedia/)
+- [Source code](https://github.com/mahdikiani/umedia)
+- [Report a problem](https://github.com/mahdikiani/umedia/issues)
+- [Current hosted preview](https://umedia.uln.me) (maintainer preview; not a public signup service)
 
-Start at [`docs/00-product-vision.md`](docs/00-product-vision.md) and read
-through the numbered series (`00`–`09`) in order:
+## What it does
 
-| Doc | Covers |
-|---|---|
-| [`00-product-vision.md`](docs/00-product-vision.md) | Why this exists |
-| [`01-prd.md`](docs/01-prd.md) | Target users, main features |
-| [`02-architecture.md`](docs/02-architecture.md) | High-level architecture, deployment shape, isolation model |
-| [`03-provider-system.md`](docs/03-provider-system.md) | Provider plugin contract |
-| [`04-data-model.md`](docs/04-data-model.md) | `Resource` / `ProviderConnection` schema |
-| [`05-api-design.md`](docs/05-api-design.md) | Concrete route list |
-| [`06-roadmap.md`](docs/06-roadmap.md) | Phased roadmap |
-| [`07-agent-instructions.md`](docs/07-agent-instructions.md) | Rules for anyone (human or AI agent) implementing this |
-| [`08-implementation-plan.md`](docs/08-implementation-plan.md) | The current rebuild's design decisions and why |
-| [`09-tasks.md`](docs/09-tasks.md) | Resumable, checkbox-tracked task list |
+- Browse a library that can reference content from more than one provider.
+- Upload, download, organize, and transfer files between configured providers.
+- Keep provider-specific integrations behind adapters, with the core managing the library and access rules.
+- Run the application with Docker Compose, SQLite, and persistent local volumes.
 
-Everything else under `docs/` (ALLCAPS filenames) is earlier design work,
-marked superseded but kept for reference — later ideas sometimes only exist
-there.
+Full-text search, an operating-system WebDAV mount, and AI organization are not available yet. See the [current limitations](https://mahdikiani.github.io/umedia/roadmap/).
 
-## Project status
+## Run it
 
-UMedia is being rebuilt around `apps/media` as the single backend (see
-[`08-implementation-plan.md`](docs/08-implementation-plan.md) for why).
-Track progress in [`09-tasks.md`](docs/09-tasks.md).
-
-## Running it
+The checked-in `compose.yaml` is configured for an existing Traefik deployment. It expects an external Docker network named `traefik-net`, a running Traefik instance attached to that network, and host routing configured for `drive.uln.me`. This is not a standalone local Compose setup.
 
 ```bash
-docker network create traefik-net  # once, if it doesn't already exist
-docker compose up --build
+docker network create traefik-net
+docker compose up --build -d
 ```
 
-One backend container (SQLite, no external database), one frontend
-container. See `compose.yaml` and `.env.example`.
+Before using another hostname, update the Traefik `Host(...)` rules in `compose.yaml` and configure the matching DNS and TLS routing. Provider OAuth credentials and Telegram application credentials must be passed into the API container; see [Getting Started](https://mahdikiani.github.io/umedia/getting-started/).
 
-## Contributing
+## Support and contributions
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Use [GitHub Issues](https://github.com/mahdikiani/umedia/issues) for bugs and support requests. Include the UMedia version or commit, provider type, steps to reproduce, and relevant redacted logs. Never post passwords, tokens, session strings, or private files.
+
+See [Contributing](https://mahdikiani.github.io/umedia/contributing/) before opening a pull request. For direct contact, email [mahdikiany@gmail.com](mailto:mahdikiany@gmail.com) or Telegram [@mahdikiani](https://t.me/mahdikiani).
 
 ## License
 
-[MIT](LICENSE)
+UMedia is licensed under the [MIT License](LICENSE).

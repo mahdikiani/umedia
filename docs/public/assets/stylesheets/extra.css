@@ -1,0 +1,87 @@
+:root {
+  --md-text-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.md-header {
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--md-default-fg-color) 10%, transparent);
+}
+
+.md-content__inner {
+  max-width: 58rem;
+}
+
+.hero {
+  padding: clamp(2rem, 7vw, 5.5rem) 0 2.5rem;
+}
+
+.hero h1 {
+  max-width: 20ch;
+  margin-bottom: 1rem;
+  font-size: clamp(2.5rem, 5.5vw, 3.75rem);
+  font-weight: 750;
+  letter-spacing: -0.055em;
+  line-height: 1.02;
+}
+
+.hero p {
+  max-width: 44rem;
+  color: var(--md-default-fg-color--light);
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  line-height: 1.65;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1.5rem 0 0.75rem;
+}
+
+.hero-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.7rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--md-primary-fg-color);
+  border-radius: 0.5rem;
+  font-weight: 650;
+}
+
+.hero-actions a:first-child {
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.feature-card {
+  height: 100%;
+  padding: 1.15rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.75rem;
+  background: var(--md-code-bg-color);
+}
+
+.feature-card h3 {
+  margin-top: 0;
+}
+
+.feature-card p:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 600px) {
+  .hero {
+    padding-top: 2rem;
+  }
+
+  .hero h1 {
+    max-width: 12ch;
+  }
+}
