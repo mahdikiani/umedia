@@ -3,16 +3,26 @@ import Link from "next/link";
 import {
   ArrowRight,
   ArrowUpRight,
-  Check,
-  Cloud,
+  Bell,
   Code2,
+  Cloud,
   Database,
   FileImage,
   FileText,
   FolderClosed,
+  FolderPlus,
   HardDrive,
+  Home as HomeIcon,
+  Languages,
+  LayoutGrid,
+  List,
+  Search,
+  Settings,
   MoveRight,
   ShieldCheck,
+  Star,
+  Trash2,
+  Upload,
 } from "lucide-react";
 
 import styles from "./landing.module.css";
@@ -68,86 +78,55 @@ function LibraryPreview() {
   return (
     <figure className={styles.previewFigure}>
       <div className={styles.previewGlow} aria-hidden="true" />
-      <svg className={styles.connectionLines} viewBox="0 0 660 460" fill="none" aria-hidden="true">
-        <path d="M88 86C208 16 375 23 530 107" />
-        <path d="M113 390C242 444 418 429 557 346" />
-        <circle cx="88" cy="86" r="4" />
-        <circle cx="530" cy="107" r="4" />
-        <circle cx="113" cy="390" r="4" />
-        <circle cx="557" cy="346" r="4" />
-      </svg>
-      <div className={styles.previewShell}>
+      <div className={`${styles.previewShell} ${styles.panelPreview}`} aria-label="Illustrative preview of the UMedia Files page">
         <div className={styles.previewSurface}>
           <div className={styles.windowBar}>
             <div className={styles.windowBrand}>
               <BrandMark />
               <span>UMedia</span>
             </div>
-            <span className={styles.windowContext}>Personal library</span>
-            <span className={styles.windowAvatar} aria-hidden="true">M</span>
+            <span className={styles.windowSearch}><Search size={13} /> Search files…</span>
+            <span className={styles.windowTools} aria-hidden="true"><Languages size={13} /><span>ع</span><span className={styles.windowAvatar}>M</span></span>
           </div>
           <div className={styles.libraryLayout}>
-            <aside className={styles.librarySidebar} aria-label="Illustrative library navigation">
+            <aside className={styles.librarySidebar} aria-label="UMedia navigation preview">
+              <span className={styles.sideItem}><HomeIcon size={14} /> Home</span>
               <span className={`${styles.sideItem} ${styles.sideItemActive}`}>
-                <FolderClosed size={15} /> All files
+                <FileText size={14} /> Files
               </span>
-              <span className={styles.sideItem}><FileImage size={15} /> Photos</span>
-              <span className={styles.sideItem}><FileText size={15} /> Documents</span>
+              <span className={styles.sideItem}><Bell size={14} /> Notifications</span>
               <div className={styles.sideDivider} />
-              <span className={styles.sideLabel}>STORAGE</span>
-              <span className={styles.storageItem}><i className={styles.localDot} /> Local</span>
-              <span className={styles.storageItem}><i className={styles.s3Dot} /> S3 storage</span>
-              <span className={styles.storageItem}><i className={styles.cloudDot} /> Cloud drive</span>
+              <span className={styles.sideItem}><Star size={14} /> Starred</span>
+              <span className={styles.sideItem}><Trash2 size={14} /> Trash</span>
+              <div className={styles.sidebarSpacer} />
+              <span className={styles.sideItem}><Database size={14} /> Storage settings</span>
+              <span className={styles.sideItem}><Settings size={14} /> Settings</span>
             </aside>
             <div className={styles.libraryContent}>
-              <div className={styles.libraryHeading}>
-                <div>
-                  <span className={styles.libraryEyebrow}>YOUR CONTENT</span>
-                  <h2>All files</h2>
+              <div className={styles.fileToolbar}>
+                <span className={styles.breadcrumb}><HomeIcon size={12} /> <span>/</span> Files</span>
+                <div className={styles.toolbarButtons} aria-hidden="true">
+                  <span><Upload size={12} /> Upload</span>
+                  <span><FolderPlus size={12} /> New folder</span>
                 </div>
-                <span className={styles.viewMenu} aria-hidden="true">•••</span>
               </div>
-              <div className={styles.fileHeader}>
-                <span>Name</span><span>Location</span><span>Updated</span>
+              <div className={styles.fileOptions} aria-hidden="true">
+                <span>Group: None <span>⌄</span></span>
+                <span className={styles.viewOptions}><b><List size={12} /> List</b><i><LayoutGrid size={12} /> Cards</i></span>
               </div>
-              <div className={styles.fileRow}>
-                <span className={`${styles.fileIcon} ${styles.fileIconMint}`}><FileImage size={17} /></span>
-                <span className={styles.fileName}>field-notes.png</span>
-                <span className={styles.fileLocation}><i className={styles.localDot} /> Local</span>
-                <span className={styles.fileDate}>Today</span>
+              <div className={styles.fileTable}>
+                <div className={styles.fileHeader}><span>Name</span><span>Type</span><span>Size</span><span>Modified</span></div>
+                <div className={styles.fileRow}><span className={styles.fileCellName}><FolderClosed size={15} /> Documents</span><span>Folder</span><span>—</span><span>Today</span></div>
+                <div className={styles.fileRow}><span className={styles.fileCellName}><FileImage size={15} /> Photo.jpg</span><span>Image</span><span>2.4 MB</span><span>Yesterday</span></div>
+                <div className={styles.fileRow}><span className={styles.fileCellName}><FileText size={15} /> Notes.pdf</span><span>PDF</span><span>840 KB</span><span>Sep 12</span></div>
               </div>
-              <div className={styles.fileRow}>
-                <span className={`${styles.fileIcon} ${styles.fileIconBlue}`}><FileText size={17} /></span>
-                <span className={styles.fileName}>project-brief.pdf</span>
-                <span className={styles.fileLocation}><i className={styles.s3Dot} /> S3</span>
-                <span className={styles.fileDate}>Yesterday</span>
-              </div>
-              <div className={styles.fileRow}>
-                <span className={`${styles.fileIcon} ${styles.fileIconLilac}`}><FileImage size={17} /></span>
-                <span className={styles.fileName}>studio-frame.jpg</span>
-                <span className={styles.fileLocation}><i className={styles.cloudDot} /> Drive</span>
-                <span className={styles.fileDate}>May 18</span>
-              </div>
-              <div className={styles.libraryFoot}>
-                <span><Check size={13} /> Library view</span>
-                <span>Illustrative preview</span>
-              </div>
+              <span className={styles.sampleDataNote}>Sample files shown</span>
             </div>
           </div>
         </div>
       </div>
-      <div className={`${styles.floatCard} ${styles.floatCardTop}`}>
-        <span className={styles.floatIcon}><Database size={17} /></span>
-        <span><strong>Your storage</strong><small>Stays yours</small></span>
-        <Check className={styles.floatCheck} size={15} />
-      </div>
-      <div className={`${styles.floatCard} ${styles.floatCardBottom}`}>
-        <span className={styles.floatIconCloud}><Cloud size={17} /></span>
-        <span><strong>One library</strong><small>Multiple providers</small></span>
-        <MoveRight className={styles.floatArrow} size={17} />
-      </div>
       <figcaption className="sr-only">
-        Illustrative UMedia library showing files from local and S3-compatible storage in one view.
+        An illustrative preview of the UMedia Files page. The navigation, toolbar, and table follow the app; listed files are sample data.
       </figcaption>
     </figure>
   );
