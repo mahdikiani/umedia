@@ -56,6 +56,12 @@ name cell truncates long names and exposes the full value on hover.
 - File browser lists preserve all five columns inside a pane. Long filenames
   truncate in the name column while retaining their full value in the hover
   title; tables do not scroll horizontally.
+- Marketing pages use the landing token set for their product-story surfaces.
+  `MarketingHeader` and `MarketingFooter` remain content navigation;
+  `MarketingCTA` exposes primary and secondary link states; `LibraryPreview`
+  is a responsive illustrative DOM composition (never an image pretending to
+  be the app); `ProviderBadge` and `FeatureCard` communicate maturity and
+  product facts. All links retain visible keyboard focus and hover/press states.
 
 ## 6. Interaction states
 
@@ -80,3 +86,35 @@ semantic tokens in both themes. At narrow widths, toolbar groups wrap rather tha
 shrink below usable sizes; labels may remain visible because the Files actions are
 short and disambiguate adjacent controls. Keep logical-direction utilities so LTR
 and RTL layouts both work.
+
+## 9. Product landing
+
+The public landing page uses a soft structuralist, editorial split: warm neutral
+canvas, ink typography, and a restrained leaf accent connect the page to the
+local-storage story without changing the application palette. The right side
+of the hero is a dimensional, nested library-window illustration built from
+real HTML, with soft radial light behind it; it describes the product while
+remaining clearly illustrative. These choices follow the generous rhythm of
+`soft-skill.md` and the clear product hierarchy of `stripe.md`, while retaining
+UMedia's Geist typography and neutral application tokens.
+
+- Use the `--landing-*` semantic tokens from `globals.css`; surfaces adapt to
+  the existing dark theme.
+- The landing defines reusable `--landing-type-*` roles in its CSS module:
+  caption (0.625rem), small (0.75rem), body (0.875rem), responsive lead,
+  compact preview labels, display (`clamp(3rem, 6.3vw, 5.45rem)`), and section
+  headings.
+- Landing gaps use `--landing-space-*` roles; compact preview details have
+  tighter steps, and major section gaps use responsive `clamp()` values.
+- Keep the hero as an asymmetrical two-column layout on wide screens and stack
+  text before the preview below the tablet breakpoint.
+- Landing display type stays capped to a readable measure and uses Geist with
+  tight tracking.
+- Motion is limited to transform/opacity feedback on links and buttons, using
+  the defined easing. No auto-play or scroll-triggered reveals; honor
+  `prefers-reduced-motion`.
+- Provider maturity must be visible: local and S3-compatible are presented as
+  available; Google Drive, OneDrive, Dropbox, and Telegram carry Beta labels.
+  Do not imply public signup or market unimplemented search/WebDAV/AI features.
+- The root route is public marketing; `/login` remains the product entry and
+  preserves the existing authenticated redirect behavior.
