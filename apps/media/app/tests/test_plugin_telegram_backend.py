@@ -67,6 +67,7 @@ class FakeTelegramClient:
         self.connected = False
         self.messages: dict[int, _FakeMessage] = {}
         self._next_id = 1
+        self.last_sign_in_code: str | None = None
 
     async def get_chat(self, channel_ref: str | int) -> SimpleNamespace:
         if channel_ref == "A Channel":
@@ -98,7 +99,7 @@ class FakeTelegramClient:
         return SimpleNamespace(phone_code_hash="hash")
 
     async def sign_in(self, _phone: str, _code_hash: str, _code: str) -> None:
-        return None
+        self.last_sign_in_code = _code
 
     async def check_password(self, _password: str) -> None:
         return None
@@ -442,6 +443,22 @@ async def test_invalid_login_code_returns_a_safe_provider_error() -> None:
     assert client.connected is True
     await backend.login_cancel("login-id")
     assert client.connected is False
+
+
+@pytest.mark.asyncio
+async def test_login_code_normalizes_unicode_digits_and_copy_formatting() -> None:
+    client = FakeTelegramClient()
+    backend = TelegramBackend()
+    with _patched(client):
+        await backend.login_start(
+            {"api_id": "1", "api_hash": "hash"},
+            "login-id",
+            "+1234567890",
+            "-100123",
+        )
+        await backend.login_code({}, "login-id", " \u06f1\u06f2-\u0663\u0664\u06f5 ")
+
+    assert client.last_sign_in_code == "12345"
 
 
 @pytest.mark.asyncio

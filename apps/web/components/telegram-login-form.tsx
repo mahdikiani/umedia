@@ -142,6 +142,7 @@ export function TelegramLoginForm({
             autoComplete={step === "code" ? "one-time-code" : "current-password"}
             autoFocus
             id="telegram_login_value"
+            inputMode={step === "code" ? "numeric" : undefined}
             name="value"
             required
             type={step === "password" ? "password" : "text"}

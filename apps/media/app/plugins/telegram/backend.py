@@ -15,6 +15,7 @@ import asyncio
 import io
 import math
 import time
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -261,6 +262,12 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         code: str,
     ) -> dict[str, str]:
         attempt = self._get_login(login_id)
+        code = "".join(
+            str(unicodedata.decimal(character)) if character.isdecimal() else character
+            for character in code.strip()
+            if not character.isspace()
+            and character not in {"-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014"}
+        )
         try:
             await attempt.client.sign_in(attempt.phone, attempt.code_hash, code)
         except SessionPasswordNeeded:
