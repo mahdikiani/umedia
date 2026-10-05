@@ -4,7 +4,7 @@
  * apps/media `apps/provider_connections/names.py`; the server is the
  * authority, this only gives instant feedback in forms. */
 
-const MIN = 3;
+const MIN = 1;
 const MAX = 63;
 const FORBIDDEN_PREFIXES = ["xn--", "sthree-", "amzn-s3-demo-"];
 const FORBIDDEN_SUFFIXES = ["-s3alias", "--ol-s3", "--x-s3", "--table-s3"];
@@ -46,7 +46,7 @@ export function suggestConnectionName(raw: string, taken: string[] = []): string
     if (slug.endsWith(suffix)) slug = slug.slice(0, -suffix.length);
   }
   if (!slug) slug = FALLBACK;
-  else if (slug.length < MIN || RESERVED.has(slug)) {
+  else if (RESERVED.has(slug)) {
     slug = `${slug}-${FALLBACK}`.slice(0, MAX);
   }
   const used = new Set(taken);

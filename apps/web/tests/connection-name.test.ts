@@ -6,7 +6,7 @@ import {
 } from "@/lib/connection-name";
 
 describe("connection names (S3 bucket rules)", () => {
-  it.each(["abc", "my-nas", "r2-media", "x".repeat(63), "media-2"])(
+  it.each(["a", "7", "ab", "abc", "my-nas", "x".repeat(63), "media-2"])(
     "accepts %s",
     (name) => {
       expect(connectionNameError(name)).toBeNull();
@@ -14,8 +14,8 @@ describe("connection names (S3 bucket rules)", () => {
   );
 
   it.each([
-    ["ab", /3 and 63/],
-    ["x".repeat(64), /3 and 63/],
+    ["", /1 and 63/],
+    ["x".repeat(64), /1 and 63/],
     ["My NAS", /lowercase/],
     ["my.nas", /lowercase/],
     ["-nas", /start and end/],

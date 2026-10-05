@@ -3,7 +3,10 @@
 Each connection is exposed as its own bucket in the public S3-compatible
 API (`apps/s3`), so its name follows AWS general-purpose bucket naming
 rules (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html)
-with one stricter rule: no dots. A dot would put the bucket on a deeper
+with two deliberate differences: no dots, and a minimum of one character
+instead of AWS's three (product decision). botocore accepts 1+ chars;
+clients that enforce AWS's 3-char minimum client-side (MinIO's SDK
+validator, for one) cannot address 1-2 character buckets. A dot would put the bucket on a deeper
 DNS level in virtual-host addressing (`{bucket}.{endpoint}`), which the
 wildcard certificate and `vhost.bucket_from_hostname` do not cover.
 """
@@ -12,7 +15,7 @@ import re
 
 from server.config import Settings
 
-MIN_LENGTH = 3
+MIN_LENGTH = 1
 MAX_LENGTH = 63
 _ALLOWED = re.compile(r"^[a-z0-9-]+$")
 _FORBIDDEN_PREFIXES = ("xn--", "sthree-", "amzn-s3-demo-")
@@ -66,7 +69,7 @@ def slugify_connection_name(raw: str) -> str:
         slug = slug.removesuffix(suffix)
     if not slug:
         return _FALLBACK
-    if len(slug) < MIN_LENGTH or slug in RESERVED_NAMES:
+    if slug in RESERVED_NAMES:
         slug = f"{slug}-{_FALLBACK}"[:MAX_LENGTH]
     return slug
 
