@@ -12,8 +12,8 @@ structure at all). `MediaFileService` only ever sees the plain
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
-from plugins.client import PluginClient
-from plugins.contracts import CreateResourceIn, UpdateResourceIn
+from plugins.client import PluginClient, PluginRPCError
+from plugins.contracts import CreateResourceIn, ResourceNotFoundError, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
 from plugins.manifest import PluginManifest
 from plugins.process_manager import PluginProcessManager
@@ -123,7 +123,15 @@ class MediaPluginGateway:
         self, provider_connection_id: str, content_reference: str,
     ) -> None:
         client, config = await self._resolve(provider_connection_id)
-        await client.delete_resource(config, content_reference)
+        try:
+            await client.delete_resource(config, content_reference)
+        except PluginRPCError as error:
+            # Already gone at the provider (deleted there, or a folder the
+            # plugin removed with its parent): callers treat that as done.
+            # Unmapped, it surfaced as a permanent 502 on trash delete.
+            if error.status_code == 404:
+                raise ResourceNotFoundError(content_reference) from error
+            raise
 
     async def read_content(
         self,
