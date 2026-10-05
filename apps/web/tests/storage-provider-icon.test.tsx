@@ -89,6 +89,52 @@ describe("connection helpers", () => {
     expect(connectionMeta("a", connections)).toEqual({
       name: "Disk",
       providerType: "local",
+      variant: null,
     });
+  });
+});
+
+describe("provider logos", () => {
+  afterEach(cleanup);
+
+  const tile = (container: HTMLElement) =>
+    container.querySelector("[data-provider-type]")!;
+
+  it("uses official brand marks for branded services", () => {
+    for (const providerType of ["dropbox", "google_drive", "telegram", "huggingface"]) {
+      const { container } = render(<StorageProviderIcon providerType={providerType} />);
+      expect(tile(container)).toHaveClass("storage-brand-tile");
+      expect(tile(container).querySelector("svg path")).toBeTruthy();
+    }
+  });
+
+  it("uses generic glyphs for protocols and logo-restricted brands", () => {
+    for (const providerType of ["local", "ftp", "sftp", "webdav", "onedrive", "s3"]) {
+      const { container } = render(<StorageProviderIcon providerType={providerType} />);
+      expect(tile(container)).not.toHaveClass("storage-brand-tile");
+    }
+  });
+
+  it("shows the service behind S3 and WebDAV from the variant", () => {
+    const { container: r2 } = render(
+      <StorageProviderIcon providerType="s3" variant="cloudflare" />,
+    );
+    const { container: plain } = render(<StorageProviderIcon providerType="s3" />);
+    const { container: cloud } = render(
+      <StorageProviderIcon providerType="webdav" variant="nextcloud" />,
+    );
+
+    expect(tile(r2)).toHaveClass("storage-brand-tile");
+    expect(tile(r2)).toHaveAttribute("title", "Cloudflare R2");
+    expect(tile(plain)).toHaveAttribute("title", "S3 compatible");
+    expect(tile(cloud)).toHaveAttribute("title", "Nextcloud");
+    expect(tile(r2)).toHaveAttribute("data-provider-variant", "cloudflare");
+  });
+
+  it("ignores an unknown variant", () => {
+    const { container } = render(
+      <StorageProviderIcon providerType="s3" variant="not-a-brand" />,
+    );
+    expect(tile(container)).toHaveAttribute("title", "S3 compatible");
   });
 });

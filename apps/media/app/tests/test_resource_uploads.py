@@ -48,7 +48,7 @@ async def connection_id(client: httpx.AsyncClient) -> str:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Tus uploads test library",
+            "name": "tus-uploads-test-library",
             "config": {"root_path": str(library)},
         },
     )

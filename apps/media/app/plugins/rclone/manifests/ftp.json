@@ -1,0 +1,18 @@
+{
+  "id": "ftp",
+  "name": "FTP / FTPS",
+  "description": "Any FTP server. Uses explicit FTPS (TLS) by default; plain FTP sends the password unencrypted.",
+  "entrypoint": ["python", "-m", "plugins.rclone.main"],
+  "process_id": "rclone",
+  "remote_type": "ftp",
+  "status": "beta",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    { "key": "host", "label": "Host", "placeholder": "ftp.example.com" },
+    { "key": "port", "label": "Port", "required": false, "placeholder": "21 (990 for implicit TLS)" },
+    { "key": "user", "label": "Username", "required": false, "placeholder": "anonymous" },
+    { "key": "password", "label": "Password", "input_type": "password", "secret": true, "required": false },
+    { "key": "tls", "label": "TLS mode", "required": false, "placeholder": "explicit (default), implicit, or none" },
+    { "key": "root_path", "label": "Base folder", "required": false, "placeholder": "/ (server default)" }
+  ]
+}

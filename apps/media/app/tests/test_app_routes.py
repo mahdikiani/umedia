@@ -64,7 +64,7 @@ async def test_bootstrap_login_and_browse_providers(
 
     rejected = await client.post(
         "/providers",
-        json={"provider_type": "not-a-real-provider", "name": "x", "config": {}},
+        json={"provider_type": "not-a-real-provider", "name": "x-storage", "config": {}},
     )
     assert rejected.status_code == 422
 

@@ -13,7 +13,7 @@ import pytest_asyncio
 from fastapi_mongo_base.sql.models import BaseEntity
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from apps.provider_connections.models import ProviderConnection  # noqa: F401
+from apps.provider_connections.models import ProviderConnection
 from apps.provider_connections.repository import ProviderConnectionRepository
 from server.database import create_engine, create_session_factory
 

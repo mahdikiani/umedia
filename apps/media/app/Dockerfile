@@ -17,8 +17,26 @@ COPY --from=fast-uv /usr/local/lib/python3.13/site-packages /usr/local/lib/pytho
 
 WORKDIR /app
 
+# rclone comes from the official release, pinned + checksum-verified, not
+# apt: Debian trixie ships 1.60.1, which predates the sftp `host_keys`
+# option (1.75) that pins SFTP server keys -- an old binary would silently
+# skip host-key verification. Checksums: downloads.rclone.org/v1.75.1/SHA256SUMS.
+ARG RCLONE_VERSION=1.75.1
+ARG TARGETARCH=amd64
 RUN apt-get update \
-    && apt-get install -y libmagic1 rclone \
+    && apt-get install -y --no-install-recommends libmagic1 ca-certificates curl unzip \
+    && case "$TARGETARCH" in \
+         amd64) sum=982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab ;; \
+         arm64) sum=03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9 ;; \
+         *) echo "unsupported arch $TARGETARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/rclone.zip \
+         "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
+    && echo "$sum  /tmp/rclone.zip" | sha256sum -c - \
+    && unzip -j /tmp/rclone.zip "*/rclone" -d /usr/local/bin \
+    && chmod 0755 /usr/local/bin/rclone \
+    && rm /tmp/rclone.zip \
+    && apt-get purge -y curl unzip && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

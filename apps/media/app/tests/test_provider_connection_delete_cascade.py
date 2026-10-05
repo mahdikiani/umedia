@@ -35,7 +35,7 @@ async def _persist_connection(harness: Harness) -> str:
             "uid": CONNECTION_ID,
             "owner_id": OWNER_ID,
             "provider_type": "local",
-            "name": "Cascade library",
+            "name": "cascade-library",
             "encrypted_config": "cipher-text",
             "status": "configured",
             "enabled": True,

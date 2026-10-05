@@ -31,7 +31,7 @@ async def connection_id(client: httpx.AsyncClient) -> str:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Transfer routes library",
+            "name": "transfer-routes-library",
             "config": {"root_path": str(_library_dir("transfer-routes-library"))},
         },
     )

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { ConnectionNameField } from "@/components/connection-name-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,8 +19,10 @@ export function OAuthProviderForm({
   onCreated,
   onCancel,
   onBack,
+  existingNames = [],
 }: {
   provider: ProviderType;
+  existingNames?: string[];
   onCreated: (connection: ProviderConnection) => void;
   onCancel?: () => void;
   onBack: () => void;
@@ -128,15 +131,10 @@ export function OAuthProviderForm({
         <p className="mt-1 text-sm text-muted-foreground">{provider.description}</p>
       </div>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="connection_name">Connection name</Label>
-        <Input
-          defaultValue={provider.name}
-          id="connection_name"
-          name="connection_name"
-          required
-        />
-      </div>
+      <ConnectionNameField
+        existingNames={existingNames}
+        providerName={provider.name}
+      />
 
       {rootField && (
         <div className="space-y-1.5">

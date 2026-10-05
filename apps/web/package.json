@@ -24,6 +24,7 @@
     "react": "latest",
     "react-dom": "latest",
     "shadcn": "^4.16.2",
+    "simple-icons": "16.34.0",
     "sonner": "^2.0.8",
     "tailwind-merge": "latest",
     "tus-js-client": "^4.3.1",

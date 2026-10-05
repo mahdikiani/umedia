@@ -46,7 +46,7 @@ async def test_creating_a_local_connection_round_trips_through_the_real_plugin(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Library",
+            "name": "library-provider-connection-plugin-wiring",
             "config": {"root_path": str(library)},
         },
     )
@@ -72,7 +72,7 @@ async def test_creating_a_connection_outside_the_allowed_root_is_rejected(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Escape attempt",
+            "name": "escape-attempt",
             "config": {"root_path": str(outside)},
         },
     )
@@ -93,7 +93,7 @@ async def test_created_connections_are_enabled_by_default(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Enabled by default",
+            "name": "enabled-by-default",
             "config": {"root_path": str(library)},
         },
     )
@@ -112,7 +112,7 @@ async def test_patch_renames_and_disables_a_connection(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Before rename",
+            "name": "before-rename",
             "config": {"root_path": str(library)},
         },
     )
@@ -120,17 +120,17 @@ async def test_patch_renames_and_disables_a_connection(
 
     patched = await client.patch(
         f"/providers/{uid}",
-        json={"name": "After rename", "enabled": False},
+        json={"name": "after-rename", "enabled": False},
     )
 
     assert patched.status_code == 200, patched.text
     body = patched.json()
-    assert body["name"] == "After rename"
+    assert body["name"] == "after-rename"
     assert body["enabled"] is False
 
     listed = await client.get("/providers")
     match = next(item for item in listed.json() if item["uid"] == uid)
-    assert match["name"] == "After rename"
+    assert match["name"] == "after-rename"
     assert match["enabled"] is False
 
 
@@ -169,7 +169,7 @@ async def test_provider_types_expose_connect_flow(
         "/providers",
         json={
             "provider_type": "telegram",
-            "name": "Archive channel",
+            "name": "archive-channel",
             "config": {"channel_id": "-100123", "session": "session"},
         },
     )
@@ -199,7 +199,7 @@ async def test_telegram_login_api_advances_to_two_step_password(
     started = await client.post(
         "/providers/telegram/login/start",
         json={
-            "name": "Archive channel",
+            "name": "archive-two-step",
             "phone": "+1234567890",
             "channel_ref": "@channelname",
         },
@@ -243,7 +243,7 @@ async def test_telegram_login_api_returns_specific_code_error(
 
     started = await client.post(
         "/providers/telegram/login/start",
-        json={"name": "Archive", "phone": "+1234567890", "channel_ref": "@channel"},
+        json={"name": "archive-code-error", "phone": "+1234567890", "channel_ref": "@channel"},
     )
     assert started.status_code == 200
 
@@ -268,7 +268,7 @@ async def test_disabled_connection_rejects_resource_operations(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Will be disabled",
+            "name": "will-be-disabled",
             "config": {"root_path": str(library)},
         },
     )
@@ -300,7 +300,7 @@ async def test_user_cannot_see_or_edit_anothers_connection(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Admin library",
+            "name": "admin-library",
             "config": {"root_path": str(library)},
         },
     )
@@ -338,7 +338,7 @@ async def test_user_cannot_see_or_edit_anothers_connection(
             "/providers",
             json={
                 "provider_type": "local",
-                "name": "Nope",
+                "name": "nope",
                 "config": {"root_path": str(library / "member")},
             },
         )
@@ -348,7 +348,7 @@ async def test_user_cannot_see_or_edit_anothers_connection(
         assert (
             await member.patch(
                 f"/providers/{uid}",
-                json={"name": "Hijack"},
+                json={"name": "hijack"},
             )
         ).status_code == 404
         assert (await member.delete(f"/providers/{uid}")).status_code == 404
@@ -359,7 +359,7 @@ async def test_user_cannot_see_or_edit_anothers_connection(
     admin_list = await client.get("/providers")
     match = next(item for item in admin_list.json() if item["uid"] == uid)
     assert match["owner_id"] == admin_uid
-    assert match["name"] == "Admin library"
+    assert match["name"] == "admin-library"
 
 
 @pytest.mark.asyncio
@@ -385,7 +385,7 @@ async def test_non_admin_cannot_sync_or_browse_owned_local_connection(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Leftover local",
+            "name": "leftover-local",
             "config": {"root_path": str(library)},
         },
     )
@@ -423,7 +423,7 @@ async def test_owner_can_sync_their_connection(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Syncable",
+            "name": "syncable",
             "config": {"root_path": str(library)},
         },
     )
@@ -436,3 +436,77 @@ async def test_owner_can_sync_their_connection(
     accepted = await client.post(f"/providers/{uid}/sync")
     assert accepted.status_code == 202, accepted.text
     assert accepted.json()["connection_id"] == uid
+
+
+@pytest.mark.asyncio
+async def test_sftp_connection_asks_to_trust_the_host_key_then_pins_it(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+    host_key: tuple[Path, str],
+) -> None:
+    """The SSH-client trust flow over the live API and real rclone plugin:
+    first submit -> 409 with the offered key; re-submit with it -> 201."""
+    import shutil
+
+    from .test_plugin_rclone_servers import PASSWORD, USER, _rclone_serve
+
+    if shutil.which("rclone") is None:
+        pytest.skip("rclone is required")
+    key, pin = host_key
+    served = tmp_path / "served"
+    served.mkdir()
+    await _authenticated(client)
+
+    async with _rclone_serve("sftp", served, f"--key={key}") as port:
+        payload = {
+            "provider_type": "sftp",
+            "name": "nas",
+            "config": {
+                "host": "127.0.0.1",
+                "port": str(port),
+                "user": USER,
+                "password": PASSWORD,
+            },
+        }
+        types = (await client.get("/provider-types")).json()
+        sftp_fields = next(t for t in types if t["id"] == "sftp")["fields"]
+        assert "host_key" not in {field["key"] for field in sftp_fields}
+
+        first = await client.post("/providers", json=payload)
+        assert first.status_code == 409, first.text
+        body = first.json()
+        assert body["error_code"] == "host_key_unknown"
+        offered = body["host_key"]
+        assert offered["host_key"] == pin
+        assert offered["fingerprint"].startswith("SHA256:")
+        assert PASSWORD not in first.text
+
+        payload["config"]["host_key"] = offered["host_key"]
+        trusted = await client.post("/providers", json=payload)
+
+    assert trusted.status_code == 201, trusted.text
+    assert trusted.json()["provider_type"] == "sftp"
+
+
+@pytest.mark.asyncio
+async def test_telegram_login_rejects_a_bad_name_before_sending_a_code(
+    client: httpx.AsyncClient,
+) -> None:
+    await _authenticated(client)
+    response = await client.post(
+        "/providers/telegram/login/start",
+        json={"name": "My Channel", "phone": "+1234567890", "channel_ref": "@c"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error_code"] == "invalid_connection_name"
+
+
+@pytest.mark.asyncio
+async def test_connection_response_exposes_a_non_secret_variant(
+    client: httpx.AsyncClient,
+) -> None:
+    await _authenticated(client)
+    listed = (await client.get("/providers")).json()
+    assert listed
+    assert all("variant" in item for item in listed)
+    assert all("config" not in item and "encrypted_config" not in item for item in listed)

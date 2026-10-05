@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import tempfile
 from collections.abc import AsyncGenerator
 from io import BytesIO
@@ -96,3 +97,20 @@ def sample_file() -> BytesIO:
 
 def pytest_sessionfinish(exitstatus: int) -> None:
     Path(_tmp_db.name).unlink(missing_ok=True)
+
+
+@pytest.fixture
+def host_key(tmp_path: Path) -> tuple[Path, str]:
+    """A fresh ed25519 server key: (private key path, "algo base64" pin)."""
+    import subprocess  # noqa: S404 -- fixed argv, local test binaries
+
+    key = tmp_path / "host_key"
+    keygen = shutil.which("ssh-keygen")
+    if keygen is None:
+        pytest.skip("ssh-keygen not installed")
+    subprocess.run(  # noqa: S603
+        [keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        check=True,
+    )
+    algo, blob, *_ = (key.with_suffix(".pub")).read_text().split()
+    return key, f"{algo} {blob}"

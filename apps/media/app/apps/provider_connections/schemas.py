@@ -73,6 +73,9 @@ class ProviderConnectionResponse(BaseModel):
     owner_id: str | None = None
     last_tested_at: datetime | None = None
     last_error: str | None = None
+    # Non-secret brand hint for the logo (e.g. "cloudflare" for an R2
+    # endpoint), derived server-side from the encrypted config.
+    variant: str | None = None
 
 
 class TelegramLoginResponse(BaseModel):

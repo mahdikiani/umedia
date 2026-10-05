@@ -1,6 +1,7 @@
 """Unit tests for the content open matrix (`can_open_content`)."""
 
 from dataclasses import dataclass, field
+
 from apps.media_files.permissions import (
     PermissionEnum,
     can_open_content,

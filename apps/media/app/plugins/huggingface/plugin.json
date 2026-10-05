@@ -1,0 +1,12 @@
+{
+  "id": "huggingface",
+  "name": "Hugging Face Buckets",
+  "description": "Xet-backed object storage on Hugging Face. Deduplicated uploads and free server-side copies.",
+  "entrypoint": ["python", "-m", "plugins.huggingface.main"],
+  "status": "beta",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    { "key": "bucket", "label": "Bucket", "placeholder": "namespace/bucket-name" },
+    { "key": "token", "label": "Access token", "input_type": "password", "secret": true, "placeholder": "hf_... (write access)" }
+  ]
+}

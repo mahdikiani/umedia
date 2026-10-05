@@ -60,6 +60,95 @@ const telegramType = {
 describe("add storage form", () => {
   afterEach(cleanup);
 
+  const sftpType = {
+    id: "sftp",
+    name: "SFTP",
+    description: "Files over SSH.",
+    adapter: "rclone",
+    status: "beta" as const,
+    capabilities: ["list", "read", "write"],
+    fields: [
+      { key: "host", label: "Host", input_type: "text", required: true, secret: false, placeholder: null },
+      { key: "password", label: "Password", input_type: "password", required: false, secret: true, placeholder: null },
+    ],
+    connect_flow: "token" as const,
+  };
+
+  const offeredKey = {
+    host: "nas.example.com",
+    port: 22,
+    algorithm: "ssh-ed25519",
+    fingerprint: "SHA256:kZSQTAFAKtA+UVtsZWYXyHLhCKNMxX+yqRN79DjWvkM",
+    host_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKi+ckBlnE7USxCS8g5JQFgem093doRYA3BQbM+QGRPV",
+  };
+
+  function hostKeyResponse(errorCode: string, key: Record<string, unknown>) {
+    return {
+      ok: false,
+      status: 409,
+      json: async () => ({ error_code: errorCode, message: { en: "Confirm" }, detail: "409", host_key: key }),
+    };
+  }
+
+  function fillSftpForm() {
+    fireEvent.click(screen.getByRole("button", { name: /SFTP/ }));
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "nas.example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save connection" }));
+  }
+
+  it("asks to trust an SFTP host key, then re-submits with it pinned", async () => {
+    const onCreated = vi.fn();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(hostKeyResponse("host_key_unknown", offeredKey))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ uid: "c1", provider_type: "sftp", name: "SFTP" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AddStorageForm onCreated={onCreated} providerTypes={[sftpType]} />);
+    fillSftpForm();
+
+    expect(await screen.findByText("Is this the right server?")).toBeInTheDocument();
+    expect(screen.getByTestId("host-key-fingerprint")).toHaveTextContent(offeredKey.fingerprint);
+    expect(onCreated).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Trust and connect" }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const retried = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(retried.config).toEqual({
+      host: "nas.example.com",
+      password: "pw",
+      host_key: offeredKey.host_key,
+    });
+  });
+
+  it("warns loudly when the SFTP host key has changed, and cancel connects nothing", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      hostKeyResponse("host_key_mismatch", {
+        ...offeredKey,
+        pinned_fingerprints: ["SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AddStorageForm onCreated={vi.fn()} providerTypes={[sftpType]} />);
+    fillSftpForm();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("host key has changed");
+    expect(screen.getByText("SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace key and connect" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByRole("button", { name: "Save connection" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("locks Telegram when server credentials are missing", () => {
     render(
       <AddStorageForm
@@ -121,7 +210,7 @@ describe("add storage form", () => {
           method: "POST",
           body: JSON.stringify({
             provider_type: "local",
-            name: "Local storage",
+            name: "local-storage",
             config: {},
             import_existing: true,
             mirror_structure: true,
@@ -153,7 +242,7 @@ describe("add storage form", () => {
           json: async () => ({
             uid: "gdrive-1",
             provider_type: "google_drive",
-            name: "Google Drive",
+            name: "google-drive",
             status: "configured",
             enabled: true,
             import_existing: false,
@@ -197,7 +286,7 @@ describe("add storage form", () => {
           method: "POST",
           body: JSON.stringify({
             provider_type: "google_drive",
-            name: "Google Drive",
+            name: "google-drive",
             callback: "http://localhost/?code=abc&state=st",
             state: "st",
             root_folder_id: null,
@@ -245,7 +334,7 @@ describe("add storage form", () => {
     render(<AddStorageForm onCreated={onCreated} providerTypes={[telegramType]} />);
     fireEvent.click(screen.getByRole("button", { name: /Telegram/ }));
     fireEvent.change(screen.getByLabelText("Connection name"), {
-      target: { value: "My channel" },
+      target: { value: "my-channel" },
     });
     fireEvent.change(screen.getByLabelText("Phone number"), {
       target: { value: "+1234567890" },
@@ -272,7 +361,7 @@ describe("add storage form", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          name: "My channel",
+          name: "my-channel",
           phone: "+1234567890",
           channel_ref: "@my_channel",
           import_existing: false,
@@ -383,5 +472,30 @@ describe("add storage form", () => {
         "Telegram login code is invalid or expired. Cancel and request a new code.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("suggests a valid, unused bucket name and flags invalid ones", () => {
+    render(
+      <AddStorageForm
+        existingNames={["local-storage"]}
+        onCreated={vi.fn()}
+        providerTypes={[providerType]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Local storage/ }));
+
+    const input = screen.getByLabelText("Connection name") as HTMLInputElement;
+    expect(input.value).toBe("local-storage-2");
+
+    fireEvent.change(input, { target: { value: "My NAS" } });
+    expect(input.value).toBe("my nas");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/lowercase letters, numbers, and hyphens/)).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "local-storage" } });
+    expect(screen.getByText(/already have a connection/)).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "my-nas" } });
+    expect(input).not.toHaveAttribute("aria-invalid");
   });
 });

@@ -30,7 +30,17 @@ jobs:
       - name: Install S3 client tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libmagic1 rclone unzip
+          sudo apt-get install -y libmagic1 unzip
+          # Same pinned rclone as apps/media/app/Dockerfile: apt ships
+          # 1.60.1, which silently ignores sftp `host_keys` (no host-key
+          # pinning) -- tests/test_plugin_rclone_servers.py catches that.
+          curl -fsSL https://downloads.rclone.org/v1.75.1/rclone-v1.75.1-linux-amd64.zip \
+            -o /tmp/rclone.zip
+          echo "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab  /tmp/rclone.zip" \
+            | sha256sum --check
+          unzip -q -j /tmp/rclone.zip "*/rclone" -d /tmp/rclone-bin
+          sudo install -m 0755 /tmp/rclone-bin/rclone /usr/local/bin/rclone
+          rclone version | head -1
           curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
           unzip -q /tmp/awscliv2.zip -d /tmp
           sudo /tmp/aws/install --update

@@ -1,0 +1,17 @@
+{
+  "id": "webdav",
+  "name": "WebDAV",
+  "description": "Nextcloud, ownCloud, Fastmail, SharePoint, and other WebDAV servers.",
+  "entrypoint": ["python", "-m", "plugins.rclone.main"],
+  "process_id": "rclone",
+  "remote_type": "webdav",
+  "status": "beta",
+  "capabilities": ["list", "read", "write", "delete", "move", "copy"],
+  "config_fields": [
+    { "key": "url", "label": "WebDAV URL", "placeholder": "https://cloud.example.com/remote.php/dav/files/<user>" },
+    { "key": "vendor", "label": "Server type", "required": false, "placeholder": "nextcloud, owncloud, fastmail, sharepoint, or other" },
+    { "key": "user", "label": "Username", "required": false },
+    { "key": "password", "label": "Password or app password", "input_type": "password", "secret": true, "required": false },
+    { "key": "bearer_token", "label": "Bearer token", "input_type": "password", "secret": true, "required": false }
+  ]
+}

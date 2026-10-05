@@ -28,6 +28,9 @@ class ConfigField(BaseModel):
     placeholder: str | None = None
     server_managed: bool = False
     environment_variable: str | None = None
+    # Stored and sent to the plugin, but set by a flow, not typed into the
+    # form -- e.g. sftp `host_key`, pinned by the trust-this-host prompt.
+    hidden: bool = False
 
 
 class PluginManifest(BaseModel):
