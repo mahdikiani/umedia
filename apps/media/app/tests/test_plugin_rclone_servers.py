@@ -38,9 +38,11 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-async def _wait_for_port(port: int) -> None:
+async def _wait_for_port(port: int, process: asyncio.subprocess.Process) -> None:
     async with asyncio.timeout(15.0):
         while True:
+            if process.returncode is not None:
+                return  # exited early; the caller reports its stderr
             with contextlib.suppress(OSError):
                 _, writer = await asyncio.open_connection("127.0.0.1", port)
                 writer.close()
@@ -51,20 +53,30 @@ async def _wait_for_port(port: int) -> None:
 @contextlib.asynccontextmanager
 async def _rclone_serve(protocol: str, root: Path, *extra: str) -> AsyncIterator[int]:
     port = _free_port()
-    process = await asyncio.create_subprocess_exec(
-        "rclone",
-        "serve",
-        protocol,
-        str(root),
-        f"--addr=127.0.0.1:{port}",
-        f"--user={USER}",
-        f"--pass={PASSWORD}",
-        *extra,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    log = root.parent / f"rclone-serve-{protocol}.log"
+    with log.open("wb") as stderr:
+        process = await asyncio.create_subprocess_exec(
+            "rclone",
+            "serve",
+            protocol,
+            str(root),
+            f"--addr=127.0.0.1:{port}",
+            f"--user={USER}",
+            f"--pass={PASSWORD}",
+            *extra,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=stderr,
+        )
     try:
-        await _wait_for_port(port)
+        try:
+            await _wait_for_port(port, process)
+        except TimeoutError:
+            pytest.fail(f"rclone serve {protocol} not listening:\n{log.read_text()}")
+        if process.returncode is not None:
+            pytest.fail(
+                f"rclone serve {protocol} exited {process.returncode}:\n"
+                f"{log.read_text()}",
+            )
         yield port
     finally:
         if process.returncode is None:
