@@ -92,6 +92,94 @@ describe("storage settings", () => {
     expect(screen.queryByRole("heading", { name: "Account" })).not.toBeInTheDocument();
   });
 
+  it("renders the storage settings labels in Persian when that locale is selected", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn().mockReturnValue("fa"),
+      setItem: vi.fn(),
+    });
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers")) return jsonResponse([connection]);
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+
+    expect(
+      await screen.findByRole("heading", { name: "تنظیمات فضای ذخیره‌سازی" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "افزودن فضای ذخیره‌سازی" }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts a manual sync for the selected connection and shows its running state", async () => {
+    let syncStatus: "idle" | "running" = "idle";
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([connection]);
+      }
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      if (url.endsWith("/providers/provider-1/sync") && init?.method === "POST") {
+        syncStatus = "running";
+        return jsonResponse({ status: "started", connection_id: "provider-1" }, 202);
+      }
+      if (url.endsWith("/providers/provider-1/sync")) {
+        return jsonResponse({ status: syncStatus, connection_id: "provider-1" });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/providers/provider-1/sync",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(screen.getByRole("button", { name: "Syncing…" })).toBeDisabled();
+    });
+  });
+
+  it("keeps connection options collapsed until requested", async () => {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers")) return jsonResponse([connection]);
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+
+    const options = await screen.findByText("Connection settings");
+    const details = options.closest("details");
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(options);
+    expect(details).toHaveAttribute("open");
+    expect(
+      screen.getByRole("checkbox", { name: /Import existing objects/i }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the add-storage dialog wide and its form scrollable within the viewport", async () => {
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = String(input);
@@ -139,6 +227,7 @@ describe("storage settings", () => {
 
     renderStorageSettings();
 
+    fireEvent.click(await screen.findByText("Connection settings"));
     const importBox = await screen.findByRole("checkbox", {
       name: /Import existing objects/i,
     });
@@ -171,6 +260,7 @@ describe("storage settings", () => {
 
     renderStorageSettings();
 
+    fireEvent.click(await screen.findByText("Connection settings"));
     const mirrorBox = await screen.findByRole("checkbox", {
       name: /Mirror folder structure/i,
     });
@@ -202,7 +292,8 @@ describe("storage settings", () => {
     expect(screen.getAllByText("Local files").length).toBeGreaterThan(0);
     expect(screen.queryByRole("combobox", { name: "Policy" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add storage" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Connection settings"));
+    expect(screen.getByRole("button", { name: "Remove storage" })).toBeInTheDocument();
     expect(
       screen.getByRole("checkbox", { name: /Import existing objects/i }),
     ).toBeInTheDocument();
@@ -227,13 +318,14 @@ describe("storage settings", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderStorageSettings();
-    expect(await screen.findByRole("button", { name: "Remove" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByText("Connection settings"));
+    expect(await screen.findByRole("button", { name: "Remove storage" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove storage" }));
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     expect(await screen.findByRole("heading", { name: "Remove storage?" })).toBeInTheDocument();
 
-    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+    const removeButtons = screen.getAllByRole("button", { name: "Remove storage" });
     fireEvent.click(removeButtons.at(-1)!);
 
     await waitFor(() => {
@@ -273,5 +365,58 @@ describe("storage settings", () => {
       "/api/v1/settings/placement",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("renames a connection inline and keeps the editor open on a server error", async () => {
+    let patchCount = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([{ ...connection, name: "local-files" }]);
+      }
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      if (url.endsWith("/providers/provider-1") && init?.method === "PATCH") {
+        patchCount += 1;
+        const body = JSON.parse(String(init.body)) as { name: string };
+        if (body.name === "taken-name") {
+          return jsonResponse(
+            {
+              error_code: "invalid_connection_name",
+              detail: "You already have a connection named 'taken-name'",
+            },
+            422,
+          );
+        }
+        return jsonResponse({ ...connection, name: body.name });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Rename local-files" }));
+    const input = screen.getByLabelText("Connection name") as HTMLInputElement;
+
+    // Invalid by S3 rules: blocked client-side, nothing sent.
+    fireEvent.change(input, { target: { value: "My Files" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText(/lowercase letters, numbers, and hyphens/)).toBeInTheDocument();
+
+    // Valid locally but rejected by the server: error shown, editor stays.
+    fireEvent.change(input, { target: { value: "taken-name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/already have a connection named/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Connection name")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "family-photos" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      await screen.findByRole("heading", { name: "family-photos" }),
+    ).toBeInTheDocument();
+    expect(patchCount).toBe(2);
   });
 });

@@ -34,7 +34,7 @@ async def test_get_and_patch_placement(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Placement library",
+            "name": "placement-library",
             "config": {"root_path": str(_library_dir("placement-library"))},
         },
     )
@@ -99,7 +99,7 @@ async def test_upload_without_connection_id_uses_placement(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Root upload library",
+            "name": "root-upload-library",
             "config": {"root_path": str(_library_dir("root-upload-library"))},
         },
     )

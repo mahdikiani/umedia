@@ -5,13 +5,16 @@ from typing import Any, Protocol
 
 from fastapi_mongo_base.core.exceptions import BaseHTTPException
 
-from plugins.client import PluginClient
+from plugins.client import PluginClient, PluginRPCError
 from plugins.manifest import PluginManifest
 from plugins.process_manager import PluginProcessManager
+
+from .names import InvalidConnectionName, validate_connection_name
 
 
 class RepositoryProtocol(Protocol):
     async def create(self, data: dict) -> object: ...
+    async def list(self, *, owner_id: str | None = None) -> list[Any]: ...
     async def get(
         self,
         uid: str,
@@ -73,6 +76,15 @@ class ProviderValidationError(BaseHTTPException):
         )
 
 
+class InvalidConnectionNameError(ProviderValidationError):
+    """The name breaks S3 bucket naming rules or is already used by this
+    owner -- each connection is a bucket in the owner's S3 API."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.error_code = "invalid_connection_name"
+
+
 class ProviderConnectionError(BaseHTTPException):
     """Raised when a provider rejects its connection configuration."""
 
@@ -82,6 +94,35 @@ class ProviderConnectionError(BaseHTTPException):
             error_code="provider_connection_failed",
             detail=detail,
             message="Could not connect to the storage provider",
+        )
+
+
+# Plugin error codes (sdk.py sends the exception class name) that mean
+# "the user must confirm this server's SSH host key", mapped to API codes.
+_HOST_KEY_ERROR_CODES = {
+    "HostKeyUnknownError": "host_key_unknown",
+    "HostKeyMismatchError": "host_key_mismatch",
+}
+
+
+class HostKeyConfirmationRequired(BaseHTTPException):
+    """The SFTP server's host key is not trusted yet (first connect) or
+    has changed. `host_key` in the body carries the offered key and its
+    fingerprint; the client re-submits with `config.host_key` set once the
+    user confirms -- an SSH client's "trust this host?" step."""
+
+    def __init__(self, error_code: str, detail: str, host_key: dict) -> None:
+        changed = error_code == "host_key_mismatch"
+        super().__init__(
+            status_code=409,
+            error_code=error_code,
+            detail=detail,
+            message=(
+                "The server's host key has changed"
+                if changed
+                else "Confirm the server's host key"
+            ),
+            host_key=host_key,
         )
 
 
@@ -119,6 +160,11 @@ def build_plugin_connector(process_manager: PluginProcessManager) -> Connector:
     return connect
 
 
+def _field(row: object, key: str) -> Any:  # noqa: ANN401
+    """Read a column from an ORM row or a plain dict (test fakes)."""
+    return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+
+
 def connection_usable_by(
     connection: object,
     *,
@@ -154,6 +200,33 @@ class ProviderConnectionService:
         self._registry = registry
         self._connect = connect
         self._server_configs = server_configs or {}
+
+    async def _checked_name(
+        self,
+        name: str,
+        *,
+        owner_id: str,
+        current_uid: str | None = None,
+    ) -> str:
+        """Trimmed `name` when it is a valid, unused bucket name for this
+        owner. `current_uid` is the connection being renamed (it may keep
+        its own name)."""
+        stripped = name.strip()
+        try:
+            validate_connection_name(stripped)
+        except InvalidConnectionName as error:
+            raise InvalidConnectionNameError(str(error)) from error
+        for connection in await self._repository.list(owner_id=owner_id):
+            if connection.name == stripped and connection.uid != current_uid:
+                raise InvalidConnectionNameError(
+                    f"You already have a connection named '{stripped}'",
+                )
+        return stripped
+
+    async def check_name(self, name: str, *, owner_id: str) -> str:
+        """Public pre-check for multi-step flows (Telegram login) that
+        create the connection only at the end."""
+        return await self._checked_name(name, owner_id=owner_id)
 
     def availability(self, provider_type: str) -> tuple[bool, str | None]:
         manifest = self._registry.get(provider_type)
@@ -211,6 +284,7 @@ class ProviderConnectionService:
             )
         if mirror_structure:
             self._require_mirror_supported(provider_type)
+        name = await self._checked_name(name, owner_id=owner_id)
         normalized_input = dict(config)
         normalized_input.update(self._server_configs.get(provider_type, {}))
         missing = [
@@ -228,13 +302,21 @@ class ProviderConnectionService:
         }
         try:
             await self._connect(manifest, normalized_config)
+        except PluginRPCError as error:
+            if error.code in _HOST_KEY_ERROR_CODES:
+                raise HostKeyConfirmationRequired(
+                    _HOST_KEY_ERROR_CODES[error.code],
+                    str(error),
+                    error.data,
+                ) from error
+            raise ProviderConnectionError(str(error)) from error
         except Exception as error:
             raise ProviderConnectionError(str(error)) from error
         return await self._repository.create(
             {
                 "owner_id": owner_id,
                 "provider_type": provider_type,
-                "name": name.strip(),
+                "name": name,
                 "encrypted_config": self._cipher.encrypt_json(normalized_config),
                 "status": "configured",
                 "import_existing": import_existing,
@@ -260,6 +342,12 @@ class ProviderConnectionService:
             return None
         if mirror_structure is True:
             self._validate_connection_mirror(current)
+        if name is not None:
+            name = await self._checked_name(
+                name,
+                owner_id=_field(current, "owner_id"),
+                current_uid=_field(current, "uid"),
+            )
 
         changes = self._connection_changes(
             name=name,

@@ -37,7 +37,7 @@ async def connection_id(client: httpx.AsyncClient) -> str:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Files routes test library",
+            "name": "files-routes-test-library",
             "config": {"root_path": str(_library_dir("files-routes-library"))},
         },
     )
@@ -354,7 +354,7 @@ async def test_sync_imports_preexisting_provider_files(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Sync test library",
+            "name": "sync-test-library",
             "config": {"root_path": str(library)},
         },
     )
@@ -371,7 +371,7 @@ async def test_sync_imports_preexisting_provider_files(
         await asyncio.sleep(0.05)
         roots = (await client.get("/files")).json()["items"]
         root = next(
-            (item for item in roots if item["name"] == "Sync test library"),
+            (item for item in roots if item["name"] == "sync-test-library"),
             None,
         )
         if root is not None:
@@ -430,7 +430,7 @@ async def test_connect_with_import_existing_runs_the_import(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Auto-import library",
+            "name": "auto-import-library",
             "config": {"root_path": str(library)},
             "import_existing": True,
         },
@@ -445,7 +445,7 @@ async def test_connect_with_import_existing_runs_the_import(
         await asyncio.sleep(0.05)
         roots = (await client.get("/files")).json()["items"]
         root = next(
-            (item for item in roots if item["name"] == "Auto-import library"),
+            (item for item in roots if item["name"] == "auto-import-library"),
             None,
         )
         if root is not None:
@@ -543,6 +543,7 @@ async def test_public_link_content_may_be_shared_cached(
         assert content.content == b"public bytes"
         assert "public" in content.headers["cache-control"].lower()
         assert "no-store" not in content.headers["cache-control"].lower()
+
 
 @pytest.mark.asyncio
 async def test_anonymous_can_open_public_file_via_files_content(

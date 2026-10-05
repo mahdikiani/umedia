@@ -48,6 +48,14 @@
   --storage-telegram-fg: oklch(0.45 0.1 210);
   --storage-nextcloud-bg: oklch(0.94 0.04 155);
   --storage-nextcloud-fg: oklch(0.42 0.1 155);
+  --storage-onedrive-bg: oklch(0.94 0.04 245);
+  --storage-onedrive-fg: oklch(0.45 0.13 245);
+  --storage-ftp-bg: oklch(0.94 0.03 300);
+  --storage-ftp-fg: oklch(0.45 0.1 300);
+  --storage-sftp-bg: oklch(0.94 0.03 180);
+  --storage-sftp-fg: oklch(0.42 0.08 180);
+  --storage-webdav-bg: oklch(0.94 0.03 25);
+  --storage-webdav-fg: oklch(0.48 0.12 25);
   --storage-unknown-bg: oklch(0.94 0 0);
   --storage-unknown-fg: oklch(0.5 0 0);
   --landing-canvas: oklch(0.975 0.009 145);
@@ -166,6 +174,14 @@ button {
   --storage-telegram-fg: oklch(0.8 0.08 210);
   --storage-nextcloud-bg: oklch(0.28 0.05 155);
   --storage-nextcloud-fg: oklch(0.8 0.08 155);
+  --storage-onedrive-bg: oklch(0.28 0.05 245);
+  --storage-onedrive-fg: oklch(0.8 0.1 245);
+  --storage-ftp-bg: oklch(0.28 0.04 300);
+  --storage-ftp-fg: oklch(0.8 0.08 300);
+  --storage-sftp-bg: oklch(0.28 0.04 180);
+  --storage-sftp-fg: oklch(0.8 0.07 180);
+  --storage-webdav-bg: oklch(0.28 0.04 25);
+  --storage-webdav-fg: oklch(0.8 0.09 25);
   --storage-unknown-bg: oklch(0.28 0 0);
   --storage-unknown-fg: oklch(0.72 0 0);
   --landing-canvas: oklch(0.17 0.018 255);
@@ -206,4 +222,12 @@ button {
     font-size: inherit;
     line-height: inherit;
   }
+}
+
+/* Official brand marks (simple-icons) on a soft tile of their own brand
+   colour; `--brand` is set inline per provider. color-mix keeps contrast
+   in both themes, including light brand colours like Hugging Face's. */
+.storage-brand-tile {
+  background-color: color-mix(in oklab, var(--brand) 14%, var(--background));
+  color: color-mix(in oklab, var(--brand) 80%, var(--foreground));
 }

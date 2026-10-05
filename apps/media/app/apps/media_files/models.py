@@ -8,7 +8,7 @@ link to a `StorageObject` (apps/storage_objects). Folders need no link.
 from datetime import datetime
 
 from fastapi_mongo_base.sql.models import BaseEntity
-from sqlalchemy import JSON, Text, UniqueConstraint
+from sqlalchemy import JSON, Index, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -59,6 +59,18 @@ class MediaFileObject(BaseEntity):
     """
 
     __tablename__ = "media_file_objects"
+    # Every library join filters on all three columns. Without this,
+    # SQLite picks the single-column `role` index -- useless, since every
+    # row is "primary" -- and the join turns quadratic: ~58k files took
+    # minutes to list (S3 ListObjects, the Files page). Migration 0016.
+    __table_args__ = (
+        Index(
+            "ix_media_file_objects_file_role_live",
+            "media_file_id",
+            "role",
+            "is_deleted",
+        ),
+    )
 
     media_file_id: Mapped[str] = mapped_column(index=True)
     storage_object_id: Mapped[str] = mapped_column(index=True)

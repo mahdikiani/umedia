@@ -6,10 +6,11 @@ every object decision lives in `S3ObjectService` / `MediaFileService`.
 
 URL layout (single-bucket, path-style):
 
-- `GET /s3` -- ListBuckets
-- `GET /s3/{bucket}` -- ListObjectsV2 (bucket must be the configured name)
+- `GET /s3` -- ListBuckets: the library bucket plus one per connection
+- `GET /s3/{bucket}` -- ListObjectsV2
 - `GET /s3/{bucket}/{library-path}` -- GetObject
-- Legacy (still served): `GET /s3/{library-path}` without the bucket
+- Legacy (still served): `GET /s3/{library-path}` without the bucket,
+  when its first segment is not a bucket name
 
 The gateway rejects multipart; PutObject writes through the MediaFile
 layer onto the first enabled provider. DeleteObject / DeleteObjects
@@ -107,13 +108,6 @@ def bucket_subresource_response(request: Request, bucket: str) -> Response | Non
             media_type="application/xml",
         )
     return None
-
-
-def object_key_from_path(first: str, rest: str) -> str:
-    """Return the library-path key from bucketed or legacy S3 paths."""
-    if first == Settings.S3_COMPAT_BUCKET:
-        return rest
-    return f"{first}/{rest}"
 
 
 class PresignRequest(BaseModel):
@@ -285,8 +279,10 @@ async def get_object(
     rest: str,
     service: S3Service,
 ) -> Response:
+    bucket, key = await service.split_path(first, rest)
     return await service.get_object(
-        key=object_key_from_path(first, rest),
+        bucket=bucket,
+        key=key,
         range_header=request.headers.get("Range"),
     )
 
@@ -297,7 +293,8 @@ async def head_object(
     rest: str,
     service: S3Service,
 ) -> Response:
-    return await service.head_object(key=object_key_from_path(first, rest))
+    bucket, key = await service.split_path(first, rest)
+    return await service.head_object(bucket=bucket, key=key)
 
 
 @router.put("/{first}/{rest:path}", response_model=None)
@@ -308,8 +305,10 @@ async def put_object(
     context: S3Context,
     service: S3Service,
 ) -> Response:
+    bucket, key = await service.split_path(first, rest)
     return await service.put_object(
-        key=object_key_from_path(first, rest),
+        bucket=bucket,
+        key=key,
         body=unwrap_aws_chunked_body(context.body),
         content_type=request.headers.get("content-type"),
     )
@@ -326,7 +325,8 @@ async def delete_object(
     rest: str,
     service: S3Service,
 ) -> Response:
-    return await service.delete_object(key=object_key_from_path(first, rest))
+    bucket, key = await service.split_path(first, rest)
+    return await service.delete_object(bucket=bucket, key=key)
 
 
 def register_s3_exception_handler(app: object) -> None:

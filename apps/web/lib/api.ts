@@ -100,6 +100,8 @@ export type ProviderConnection = {
   created_at: string;
   last_tested_at: string | null;
   last_error: string | null;
+  /** Non-secret brand hint for S3/WebDAV logos, e.g. "cloudflare". */
+  variant?: string | null;
 };
 
 export type MediaFileItem = {
@@ -170,7 +172,17 @@ export type PlacementSettings = {
   fill_order: string[];
 };
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** HTTP status and parsed JSON error body, for callers that act on a
+   * specific error (e.g. the SFTP host-key confirmation, HTTP 409). */
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly body?: Record<string, unknown> | null,
+  ) {
+    super(message);
+  }
+}
 
 let refreshPromise: Promise<boolean> | null = null;
 
@@ -277,7 +289,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let response = await fetchWithOptionalRefresh(path, requestInit);
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new ApiError(extractErrorMessage(error));
+    throw new ApiError(extractErrorMessage(error), response.status, error);
   }
   if (response.status === 204) return undefined as T;
   const body: T = await response.json();
@@ -292,7 +304,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     response = await fetchWithOptionalRefresh(path, requestInit);
     if (!response.ok) {
       const error = await response.json().catch(() => null);
-      throw new ApiError(extractErrorMessage(error));
+      throw new ApiError(extractErrorMessage(error), response.status, error);
     }
     return response.json();
   }
@@ -314,7 +326,7 @@ export async function apiForm<T>(
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new ApiError(extractErrorMessage(error));
+    throw new ApiError(extractErrorMessage(error), response.status, error);
   }
   if (response.status === 204) return undefined as T;
   return response.json();

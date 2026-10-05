@@ -71,3 +71,16 @@ def test_missing_required_field_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         PluginManifest.load(path)
+
+
+def test_sftp_host_key_is_stored_but_not_shown_in_the_form() -> None:
+    from pathlib import Path
+
+    from plugins.manifest import PluginManifest
+
+    manifest = PluginManifest.load(
+        Path(__file__).parents[1] / "plugins/rclone/manifests/sftp.json",
+    )
+    host_key = next(f for f in manifest.config_fields if f.key == "host_key")
+    assert host_key.hidden is True
+    assert host_key.required is False

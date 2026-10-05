@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { ConnectionNameField } from "@/components/connection-name-field";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,8 +21,10 @@ export function TelegramLoginForm({
   onBack,
   onCancel,
   onCreated,
+  existingNames = [],
 }: {
   provider: ProviderType;
+  existingNames?: string[];
   onBack: () => void;
   onCancel?: () => void;
   onCreated: (connection: ProviderConnection) => void;
@@ -108,10 +111,10 @@ export function TelegramLoginForm({
 
       {step === "details" ? (
         <>
-          <div className="space-y-1.5">
-            <Label htmlFor="connection_name">Connection name</Label>
-            <Input defaultValue={provider.name} id="connection_name" name="connection_name" required />
-          </div>
+          <ConnectionNameField
+            existingNames={existingNames}
+            providerName={provider.name}
+          />
           <div className="space-y-1.5">
             <Label htmlFor="telegram_phone">Phone number</Label>
             <Input autoComplete="tel" id="telegram_phone" name="phone" placeholder="+1234567890" required type="tel" />

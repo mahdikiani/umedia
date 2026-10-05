@@ -131,7 +131,11 @@ function StorageConnectionLabel({
   if (!meta) return null;
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1.5", className)}>
-      <StorageProviderIcon providerType={meta.providerType} size="sm" />
+      <StorageProviderIcon
+        providerType={meta.providerType}
+        size="sm"
+        variant={meta.variant}
+      />
       <span className="truncate">{meta.name}</span>
     </span>
   );
@@ -512,6 +516,7 @@ export function FileBrowserPane({
               <StorageProviderIcon
                 providerType={currentStorage.providerType}
                 size="sm"
+                variant={currentStorage.variant}
               />
               <span className="truncate">{currentStorage.name}</span>
             </span>

@@ -70,7 +70,7 @@ async def s3_file(client: httpx.AsyncClient) -> _S3File:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "S3 API test library",
+            "name": "s3-api-test-library",
             "config": {"root_path": str(storage_root)},
         },
     )
@@ -549,9 +549,9 @@ async def test_delete_objects_post_removes_keys(
     assert put_response.status_code == 200, put_response.text
 
     body = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        "<Delete><Object><Key>s3-multi-delete.txt</Key></Object></Delete>"
-    ).encode()
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b"<Delete><Object><Key>s3-multi-delete.txt</Key></Object></Delete>"
+    )
     delete_path = f"{Settings.base_path}/s3/{Settings.S3_COMPAT_BUCKET}?delete"
     response = await client.post(
         delete_path.removeprefix(Settings.base_path),
@@ -647,7 +647,7 @@ async def test_duplicate_library_names_have_distinct_projected_keys(
         "/providers",
         json={
             "provider_type": "local",
-            "name": "S3 duplicate test library",
+            "name": "s3-duplicate-test-library",
             "config": {"root_path": str(second_root)},
         },
     )

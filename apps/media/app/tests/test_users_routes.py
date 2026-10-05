@@ -245,7 +245,7 @@ async def test_non_admins_are_read_only(
         assert (await member.get("/settings/placement")).status_code == 200
         blocked = await member.post(
             "/providers",
-            json={"provider_type": "local", "name": "x", "config": {}},
+            json={"provider_type": "local", "name": "x-users-routes", "config": {}},
         )
         assert blocked.status_code == 403
         assert blocked.json()["error_code"] == "local_admin_required"

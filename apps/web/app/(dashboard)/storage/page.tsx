@@ -306,6 +306,7 @@ function StorageBrowser() {
                     <StorageProviderIcon
                       providerType={selectedConnection.provider_type}
                       size="sm"
+                      variant={selectedConnection.variant}
                     />
                     <span className="truncate">{selectedConnection.name}</span>
                   </span>
@@ -318,6 +319,7 @@ function StorageBrowser() {
                       <StorageProviderIcon
                         providerType={connection.provider_type}
                         size="sm"
+                        variant={connection.variant}
                       />
                       <span className="truncate">{connection.name}</span>
                     </span>
@@ -384,6 +386,7 @@ function StorageBrowser() {
                     className="mx-auto mb-3"
                     providerType={selectedConnection?.provider_type ?? "unknown"}
                     size="md"
+                    variant={selectedConnection?.variant}
                   />
                   {query
                     ? "No matching objects in this provider."

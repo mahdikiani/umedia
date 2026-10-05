@@ -41,7 +41,7 @@ async def s3_cli_file(client: httpx.AsyncClient) -> _S3File:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "S3 CLI test library",
+            "name": "s3-cli-test-library",
             "config": {"root_path": str(storage_root)},
         },
     )

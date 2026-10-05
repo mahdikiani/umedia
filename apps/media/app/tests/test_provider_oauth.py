@@ -217,7 +217,7 @@ async def test_resolve_onedrive_drive_uses_graph_me_drive() -> None:
 def _drive_manifest() -> PluginManifest:
     return PluginManifest(
         id="google_drive",
-        name="Google Drive",
+        name="google-drive",
         description="Drive",
         entrypoint=["python", "-m", "plugins.rclone.main"],
         process_id="rclone",
@@ -268,6 +268,9 @@ class _FakeRepo:
             "import_existing": data.get("import_existing", False),
             "mirror_structure": data.get("mirror_structure", False),
         }
+
+    async def list(self, *, owner_id: str | None = None) -> list:
+        return []
 
     async def get(self, uid: str, *, owner_id: str | None = None) -> None:
         return None
@@ -439,7 +442,7 @@ async def test_oauth_complete_creates_cloud_connection(
     )
     await service.complete(
         provider_type=provider_type,
-        name=f"{provider_type} storage",
+        name=f"{provider_type.replace('_', '-')}-storage",
         callback=f"code=provider-code&state={state}",
         state=state,
         owner_id="user-1",
@@ -483,7 +486,7 @@ async def test_oauth_complete_exchanges_code_and_creates_connection(
 
     connection = await service.complete(
         provider_type="google_drive",
-        name="My Drive",
+        name="my-drive",
         callback=f"http://localhost/?code=pasted-code&state={state}",
         state=state,
         root_folder_id="root-1",
@@ -493,7 +496,7 @@ async def test_oauth_complete_exchanges_code_and_creates_connection(
     assert connection["uid"] == "conn-1"
     assert repo.created is not None
     assert repo.created["provider_type"] == "google_drive"
-    assert repo.created["name"] == "My Drive"
+    assert repo.created["name"] == "my-drive"
     assert repo.created["import_existing"] is True
     encrypted = repo.created["encrypted_config"]
     assert "access" in encrypted
@@ -507,7 +510,7 @@ async def test_oauth_complete_accepts_token_json_without_state() -> None:
     service, _, repo = _oauth_service()
     connection = await service.complete(
         provider_type="google_drive",
-        name="Drive",
+        name="drive",
         callback=json.dumps(
             {
                 "access_token": "ya29",
@@ -530,7 +533,7 @@ async def test_oauth_complete_rejects_state_mismatch() -> None:
     with pytest.raises(OAuthCallbackError, match="invalid or expired"):
         await service.complete(
             provider_type="google_drive",
-            name="Drive",
+            name="drive",
             callback="http://localhost/?code=c&state=wrong-state",
             state="wrong-state",
             owner_id="user-1",
@@ -664,7 +667,7 @@ async def test_oauth_start_and_complete_routes(
         "/providers/oauth/complete",
         json={
             "provider_type": "google_drive",
-            "name": "GDrive",
+            "name": "gdrive",
             "callback": f"code=route-code&state={body['state']}",
             "state": body["state"],
             "import_existing": False,
@@ -674,5 +677,5 @@ async def test_oauth_start_and_complete_routes(
     assert complete.status_code == 201, complete.text
     created = complete.json()
     assert created["provider_type"] == "google_drive"
-    assert created["name"] == "GDrive"
+    assert created["name"] == "gdrive"
     assert created["status"] == "configured"

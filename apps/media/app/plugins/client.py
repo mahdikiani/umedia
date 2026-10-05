@@ -9,6 +9,7 @@ effects from retrying a slow-but-actually-succeeding write).
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ from .contracts import (
 CONFIG_HEADER = "X-Umedia-Connection-Config"
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+TELEGRAM_LOGIN_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_TIMEOUT_SECONDS,
+    read=60.0,
+    write=DEFAULT_TIMEOUT_SECONDS,
+    pool=DEFAULT_TIMEOUT_SECONDS,
+)
 READ_RETRY_ATTEMPTS = 3
 READ_RETRY_BACKOFF_SECONDS = 0.5
 
@@ -39,14 +46,37 @@ CONTENT_STREAM_TIMEOUT = httpx.Timeout(
     write=60.0,
     pool=DEFAULT_TIMEOUT_SECONDS,
 )
+logger = logging.getLogger(__name__)
 
 
 class PluginRPCError(RuntimeError):
     """A plugin call failed -- connection/timeout, or a non-2xx response."""
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        code: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        # The plugin's error class name and structured `data`, when the
+        # plugin SDK produced the error body (see sdk.py's handler).
+        self.code = code
+        self.data = data or {}
+
+
+def _error_body(response: httpx.Response) -> tuple[str | None, dict[str, Any]]:
+    try:
+        body = response.json()
+    except ValueError:
+        return None, {}
+    if not isinstance(body, dict):
+        return None, {}
+    data = body.get("data")
+    return body.get("code"), data if isinstance(data, dict) else {}
 
 
 def _config_headers(config: dict[str, Any]) -> dict[str, str]:
@@ -103,6 +133,15 @@ class PluginClient:
                     )
                 except (httpx.TimeoutException, httpx.ConnectError) as error:
                     last_error = error
+                    if path.startswith("/auth/"):
+                        logger.warning(
+                            "Telegram login plugin RPC transport failed",
+                            extra={
+                                "phase": path.rsplit("/", 1)[-1],
+                                "outcome": "transport_failure",
+                                "reason": type(error).__name__,
+                            },
+                        )
                     if attempt + 1 < attempts:
                         await asyncio.sleep(READ_RETRY_BACKOFF_SECONDS * (2**attempt))
                         continue
@@ -110,10 +149,13 @@ class PluginClient:
                         f"Plugin call {method} {path} failed: {error}",
                     ) from error
                 if response.status_code >= 400:
+                    code, data = _error_body(response)
                     raise PluginRPCError(
                         f"Plugin call {method} {path} returned "
                         f"{response.status_code}: {response.text}",
                         status_code=response.status_code,
+                        code=code,
+                        data=data,
                     )
                 return response
         # Unreachable: the loop above always either returns or raises.
@@ -140,6 +182,7 @@ class PluginClient:
             "POST",
             "/auth/start",
             retry=False,
+            timeout=TELEGRAM_LOGIN_TIMEOUT,
             config=config,
             json={"login_id": login_id, "phone": phone, "channel_ref": channel_ref},
         )
@@ -155,8 +198,9 @@ class PluginClient:
     ) -> dict[str, str]:
         response = await self._request(
             "POST",
-            f"/auth/{encode_resource_id(login_id)}/{step}",
+            f"/auth/{login_id}/{step}",
             retry=False,
+            timeout=TELEGRAM_LOGIN_TIMEOUT,
             config=config,
             json={step: value},
         )
@@ -165,7 +209,7 @@ class PluginClient:
     async def telegram_login_cancel(self, login_id: str) -> None:
         await self._request(
             "DELETE",
-            f"/auth/{encode_resource_id(login_id)}",
+            f"/auth/{login_id}",
             retry=False,
         )
 

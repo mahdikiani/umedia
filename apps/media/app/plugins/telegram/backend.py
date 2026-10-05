@@ -13,6 +13,7 @@ Known platform limitations, by design, not oversights:
 
 import asyncio
 import io
+import logging
 import math
 import time
 import unicodedata
@@ -42,6 +43,7 @@ from plugins.sdk import PluginBackend, TelegramLoginPluginBackend
 LIST_LIMIT = 200
 CHUNK_SIZE = 1024 * 1024
 LOGIN_TTL_SECONDS = 300
+logger = logging.getLogger(__name__)
 
 
 class _LoginAttempt:
@@ -200,6 +202,10 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
     def _get_login(self, login_id: str) -> _LoginAttempt:
         attempt = self._login_attempts.get(login_id)
         if attempt is None or attempt.expires_at <= time.monotonic():
+            logger.warning(
+                "Telegram login step rejected",
+                extra={"phase": "state_lookup", "outcome": "expired_or_missing"},
+            )
             raise ConnectionFailedError("Telegram login expired; start again")
         return attempt
 
@@ -230,6 +236,10 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
             phone,
             sent_code.phone_code_hash,
             channel_ref,
+        )
+        logger.info(
+            "Telegram login code sent",
+            extra={"phase": "start", "outcome": "code_sent"},
         )
         return {"step": "code"}
 
@@ -271,8 +281,20 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         try:
             await attempt.client.sign_in(attempt.phone, attempt.code_hash, code)
         except SessionPasswordNeeded:
+            logger.info(
+                "Telegram login requires two-step password",
+                extra={"phase": "code", "outcome": "password_required"},
+            )
             return {"step": "password"}
         except (PhoneCodeExpired, PhoneCodeInvalid) as error:
+            logger.warning(
+                "Telegram login code rejected",
+                extra={
+                    "phase": "code",
+                    "outcome": "rejected",
+                    "reason": type(error).__name__,
+                },
+            )
             attempt.failed_attempts += 1
             if attempt.failed_attempts >= 3:
                 await self._close_login(login_id)
@@ -296,6 +318,14 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         try:
             await attempt.client.check_password(password)
         except PasswordHashInvalid as error:
+            logger.warning(
+                "Telegram two-step password rejected",
+                extra={
+                    "phase": "password",
+                    "outcome": "rejected",
+                    "reason": type(error).__name__,
+                },
+            )
             attempt.failed_attempts += 1
             if attempt.failed_attempts >= 3:
                 await self._close_login(login_id)

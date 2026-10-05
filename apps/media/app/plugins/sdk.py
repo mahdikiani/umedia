@@ -186,7 +186,11 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
     def _backend_error(_: Request, error: PluginBackendError) -> JSONResponse:
         return JSONResponse(
             status_code=error.http_status,
-            content={"code": type(error).__name__, "message": str(error)},
+            content={
+                "code": type(error).__name__,
+                "message": str(error),
+                **({"data": error.data} if error.data else {}),
+            },
         )
 
     @app.get("/health")

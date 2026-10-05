@@ -62,6 +62,10 @@ name cell truncates long names and exposes the full value on hover.
   is a responsive illustrative DOM composition (never an image pretending to
   be the app); `ProviderBadge` and `FeatureCard` communicate maturity and
   product facts. All links retain visible keyboard focus and hover/press states.
+- Storage settings use a responsive grid of compact connection cards. The
+  collapsed row shows provider identity, connection status, and manual sync;
+  lower-frequency import and mirroring options stay in a native disclosure
+  section. Keep destructive removal behind its existing confirmation dialog.
 
 ## 6. Interaction states
 
@@ -70,6 +74,9 @@ shared `ring` token. Hover and expanded states use `muted` or `accent`; disabled
 states reduce opacity and block pointer interaction. Loading operations retain
 their current spinner, progress, or disabled affordance. URL-controlled selects
 must render the active option on first load.
+- Manual provider sync stays disabled and visibly busy while its background job
+  runs. Connection cards poll the existing sync-status endpoint and stop when
+  it returns idle.
 
 ## 7. Border and elevation policy
 

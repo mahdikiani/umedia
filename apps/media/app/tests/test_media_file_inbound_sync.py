@@ -5,9 +5,9 @@ reconcile with `POST /providers/{uid}/sync`.
 
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import AsyncMock
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -432,7 +432,7 @@ async def _persist_connection(
     payload: dict[str, Any] = {
         "owner_id": ACTOR_ID,
         "provider_type": "local",
-        "name": "Library",
+        "name": "library",
         "encrypted_config": "cipher-text",
         "status": "configured",
         "enabled": True,

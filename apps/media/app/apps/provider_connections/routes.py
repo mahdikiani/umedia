@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, Response, status
 from fastapi_mongo_base.errors import NotFoundError
 from usso.lite.models import LocalUser
 
+from .names import connection_variant
 from .oauth import GoogleOAuthCredentials, OAuthStateStore
 from .oauth_service import ProviderOAuthService
 from .repository import ProviderConnectionRepository
@@ -102,8 +103,23 @@ def _oauth_service(request: Request) -> ProviderOAuthService:
     )
 
 
-def _response(item: object) -> ProviderConnectionResponse:
+def _variant(request: Request, item: object) -> str | None:
+    if item.provider_type not in {"s3", "webdav"}:
+        return None
+    try:
+        config = request.app.state.credential_cipher.decrypt_json(
+            item.encrypted_config,
+        )
+    except Exception:
+        return None
+    return connection_variant(item.provider_type, config)
+
+
+def _response(
+    item: object, request: Request | None = None,
+) -> ProviderConnectionResponse:
     return ProviderConnectionResponse(
+        variant=_variant(request, item) if request is not None else None,
         uid=item.uid,
         owner_id=getattr(item, "owner_id", None),
         provider_type=item.provider_type,
@@ -218,6 +234,7 @@ async def list_provider_types(request: Request) -> list[ProviderTypeResponse]:
                 }
                 for field in item.config_fields
                 if not field.server_managed
+                and not field.hidden
                 and not (
                     item.connect_flow == "session"
                     and field.key in {"session", "channel_id"}
@@ -237,7 +254,8 @@ async def list_connections(request: Request) -> list[ProviderConnectionResponse]
     """List the caller's storage connections without credentials."""
     user = _user(request)
     return [
-        _response(item) for item in await _repository(request).list(owner_id=user.uid)
+        _response(item, request)
+        for item in await _repository(request).list(owner_id=user.uid)
     ]
 
 
@@ -272,7 +290,7 @@ async def create_connection(
         mirror_structure=data.mirror_structure,
     )
     _schedule_import(request, connection.uid, user.uid)
-    return _response(connection)
+    return _response(connection, request)
 
 
 @router.post(
@@ -317,7 +335,7 @@ async def oauth_complete(
         is_admin=_is_admin(user),
     )
     _schedule_import(request, connection.uid, user.uid)
-    return _response(connection)
+    return _response(connection, request)
 
 
 @router.post(
@@ -329,9 +347,12 @@ async def telegram_login_start(
     request: Request,
 ) -> TelegramLoginResponse:
     user = _user(request)
+    # Check the name before Telegram sends a login code, not after the
+    # user has typed it in.
+    name = await _service(request).check_name(data.name, owner_id=user.uid)
     result = await request.app.state.telegram_login_service.start(
         owner_id=user.uid,
-        name=data.name,
+        name=name,
         phone=data.phone,
         channel_ref=data.channel_ref,
         import_existing=data.import_existing,
@@ -360,7 +381,9 @@ async def telegram_login_code(
     )
     if connection is not None:
         _schedule_import(request, connection.uid, user.uid)
-        return TelegramLoginResponse(**result, connection=_response(connection))
+        return TelegramLoginResponse(
+            **result, connection=_response(connection, request),
+        )
     return TelegramLoginResponse(**result)
 
 
@@ -384,7 +407,9 @@ async def telegram_login_password(
     )
     if connection is not None:
         _schedule_import(request, connection.uid, user.uid)
-        return TelegramLoginResponse(**result, connection=_response(connection))
+        return TelegramLoginResponse(
+            **result, connection=_response(connection, request),
+        )
     return TelegramLoginResponse(**result)
 
 
@@ -420,7 +445,7 @@ async def update_connection(
     )
     if updated is None:
         raise _not_found()
-    return _response(updated)
+    return _response(updated, request)
 
 
 @router.delete(

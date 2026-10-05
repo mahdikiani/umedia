@@ -286,7 +286,7 @@ async def connection_id(client: httpx.AsyncClient) -> str:
         "/providers",
         json={
             "provider_type": "local",
-            "name": "Temporary pointer routes",
+            "name": "temporary-pointer-routes",
             "config": {"root_path": str(_library_dir("temporary-pointer-routes"))},
         },
     )

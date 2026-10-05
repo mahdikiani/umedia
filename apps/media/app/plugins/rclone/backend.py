@@ -13,8 +13,11 @@ disk here.
 """
 
 import asyncio
+import base64
 import contextlib
 import logging
+import os
+import re
 import socket
 from collections.abc import AsyncIterator
 from typing import Any
@@ -24,6 +27,8 @@ import httpx
 from plugins.contracts import (
     ConnectionFailedError,
     CreateResourceIn,
+    HostKeyMismatchError,
+    HostKeyUnknownError,
     PluginBackendError,
     Resource,
     ResourceNotFoundError,
@@ -35,6 +40,7 @@ from plugins.sdk import PluginBackend
 logger = logging.getLogger(__name__)
 
 RCD_STARTUP_TIMEOUT_SECONDS = 15.0
+HOST_KEY_PROBE_TIMEOUT_SECONDS = 10.0
 RCD_STOP_TIMEOUT_SECONDS = 5.0
 RC_CALL_TIMEOUT_SECONDS = 30.0
 READ_CHUNK_SIZE = 64 * 1024
@@ -161,6 +167,206 @@ def _dropbox_fs(config: dict[str, Any]) -> str:
     return f":dropbox,{_params(params)}:"
 
 
+# rclone's fixed "obscure" key (fs/config/obscure/obscure.go). Not
+# encryption -- rclone requires `pass` options in obscured form, even on an
+# inline connection string, so plaintext would be rejected. Doing it
+# in-process avoids an `rclone obscure` subprocess that would put the
+# password in argv (visible in `ps`).
+_RCLONE_OBSCURE_KEY = bytes.fromhex(
+    "9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf4de162b8b95f638",
+)
+
+
+def _obscure(value: str) -> str:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    iv = os.urandom(16)
+    encryptor = Cipher(algorithms.AES(_RCLONE_OBSCURE_KEY), modes.CTR(iv)).encryptor()
+    ciphertext = encryptor.update(value.encode()) + encryptor.finalize()
+    return base64.urlsafe_b64encode(iv + ciphertext).decode().rstrip("=")
+
+
+def _require(config: dict[str, Any], *keys: str) -> None:
+    for key in keys:
+        if not str(config.get(key) or "").strip():
+            raise ConnectionFailedError(f"{key} is required")
+
+
+def _root(config: dict[str, Any]) -> str:
+    """Optional base directory on path-addressed servers (ftp/sftp)."""
+    return str(config.get("root_path") or "").strip()
+
+
+_FTP_TLS_MODES = {"explicit", "implicit", "none"}
+
+
+def _ftp_fs(config: dict[str, Any]) -> str:
+    _require(config, "host")
+    # Explicit FTPS by default: plain FTP sends the password in cleartext,
+    # so it must be an explicit opt-in ("none"), not the silent fallback.
+    tls = (config.get("tls") or "explicit").strip().lower()
+    if tls not in _FTP_TLS_MODES:
+        raise ConnectionFailedError(
+            f"tls must be one of {', '.join(sorted(_FTP_TLS_MODES))}",
+        )
+    password = config.get("password")
+    params: dict[str, str | None] = {
+        "host": config["host"].strip(),
+        "port": config.get("port"),
+        "user": config.get("user"),
+        "pass": _obscure(password) if password else None,
+        "tls": "true" if tls == "implicit" else None,
+        "explicit_tls": "true" if tls == "explicit" else None,
+    }
+    return f":ftp,{_params(params)}:{_root(config)}"
+
+
+_PEM_RE = re.compile(
+    r"(-----BEGIN [A-Z0-9 ]+-----)\s*(.*?)\s*(-----END [A-Z0-9 ]+-----)",
+    re.DOTALL,
+)
+
+
+def _single_line_pem(key: str) -> str:
+    """rclone's `key_pem` wants one line with literal `\\n` separators.
+
+    Accepts a key with real newlines, with `\\n` already escaped, or with
+    newlines stripped entirely (what a single-line `<input>` does to a
+    pasted key) -- base64 bodies tolerate any line wrapping, so the body is
+    re-joined as one line between the BEGIN/END armor.
+    """
+    normalized = key.replace("\\n", "\n").strip()
+    match = _PEM_RE.search(normalized)
+    if not match:
+        raise ConnectionFailedError("private_key must be a PEM-encoded key")
+    begin, body, end = match.groups()
+    return "\\n".join([begin, re.sub(r"\s+", "", body), end])
+
+
+def _sftp_fs(config: dict[str, Any]) -> str:
+    _require(config, "host", "user")
+    password = config.get("password")
+    private_key = config.get("private_key")
+    if not password and not private_key:
+        raise ConnectionFailedError("password or private_key is required")
+    params: dict[str, str | None] = {
+        "host": config["host"].strip(),
+        "port": config.get("port"),
+        "user": config["user"],
+        "pass": _obscure(password) if password else None,
+        "key_pem": _single_line_pem(private_key) if private_key else None,
+        "key_file_pass": (
+            _obscure(config["key_passphrase"]) if config.get("key_passphrase") else None
+        ),
+        "host_keys": ",".join(_pinned_host_keys(config)),
+    }
+    return f":sftp,{_params(params)}:{_root(config)}"
+
+
+def _pinned_host_keys(config: dict[str, Any]) -> list[str]:
+    """The connection's pinned server keys, as rclone `host_keys` entries.
+
+    Required: without a pin rclone accepts *any* server key. The first
+    connect gets the key from `probe_host_key` and asks the user to trust
+    it, the way an SSH client does (see `RcloneBackend.connect`).
+    """
+    raw = str(config.get("host_key") or "").strip()
+    if not raw:
+        raise ConnectionFailedError("host_key is required")
+    import asyncssh
+
+    pins = []
+    for entry in raw.replace("\n", ",").split(","):
+        if not entry.strip():
+            continue
+        try:
+            key = asyncssh.import_public_key(entry.strip())
+        except (asyncssh.KeyImportError, ValueError) as error:
+            raise ConnectionFailedError(
+                f"host_key is not a valid SSH key: {error}",
+            ) from error
+        pins.append(_openssh_key(key))
+    return pins
+
+
+def _openssh_key(key: Any) -> str:  # noqa: ANN401 -- asyncssh.SSHKey
+    """`algo base64` -- the known_hosts form, without a comment."""
+    algorithm, blob, *_ = key.export_public_key("openssh").decode().split()
+    return f"{algorithm} {blob}"
+
+
+def _host_key_data(key: Any, host: str, port: int) -> dict[str, Any]:  # noqa: ANN401
+    return {
+        "host": host,
+        "port": port,
+        "algorithm": key.get_algorithm(),
+        "fingerprint": key.get_fingerprint("sha256"),
+        "host_key": _openssh_key(key),
+    }
+
+
+async def probe_host_key(
+    host: str,
+    port: int,
+    *,
+    algorithms: list[str] | None = None,
+) -> Any:  # noqa: ANN401 -- asyncssh.SSHKey
+    """The server's host key, from the SSH key exchange only -- no login,
+    so no credential is sent to a server the user has not trusted yet."""
+    import asyncssh
+
+    options: dict[str, Any] = {}
+    if algorithms:
+        options["server_host_key_algs"] = algorithms
+    try:
+        async with asyncio.timeout(HOST_KEY_PROBE_TIMEOUT_SECONDS):
+            key = await asyncssh.get_server_host_key(host, port, **options)
+    except (OSError, TimeoutError, asyncssh.Error) as error:
+        raise ConnectionFailedError(
+            f"cannot reach SSH server {host}:{port}: {error}",
+        ) from error
+    if key is None:
+        raise ConnectionFailedError(f"SSH server {host}:{port} offered no host key")
+    return key
+
+
+def _sftp_port(config: dict[str, Any]) -> int:
+    raw = str(config.get("port") or "").strip()
+    if not raw:
+        return 22
+    if not raw.isdigit() or not 0 < int(raw) < 65536:
+        raise ConnectionFailedError("port must be a number between 1 and 65535")
+    return int(raw)
+
+
+def _is_host_key_mismatch(message: str) -> bool:
+    return "host key mismatch" in message
+
+
+_WEBDAV_VENDORS = {
+    "fastmail", "nextcloud", "owncloud", "infinitescale",
+    "sharepoint", "sharepoint-ntlm", "rclone", "other",
+}
+
+
+def _webdav_fs(config: dict[str, Any]) -> str:
+    _require(config, "url")
+    vendor = (config.get("vendor") or "other").strip().lower()
+    if vendor not in _WEBDAV_VENDORS:
+        raise ConnectionFailedError(
+            f"vendor must be one of {', '.join(sorted(_WEBDAV_VENDORS))}",
+        )
+    password = config.get("password")
+    params: dict[str, str | None] = {
+        "url": config["url"].strip(),
+        "vendor": vendor,
+        "user": config.get("user"),
+        "pass": _obscure(password) if password else None,
+        "bearer_token": config.get("bearer_token"),
+    }
+    return f":webdav,{_params(params)}:"
+
+
 def _local_debug_fs(config: dict[str, Any]) -> str:
     """rclone's own `local` backend -- not a cataloged provider (UMedia
     already has a native `local` plugin, Phase 3.1). Kept as a permanent,
@@ -180,6 +386,9 @@ _FS_BUILDERS = {
     "google_drive": _google_drive_fs,
     "onedrive": _onedrive_fs,
     "dropbox": _dropbox_fs,
+    "ftp": _ftp_fs,
+    "sftp": _sftp_fs,
+    "webdav": _webdav_fs,
     "rclone_local_debug": _local_debug_fs,
 }
 
@@ -314,11 +523,57 @@ class RcloneBackend(PluginBackend):
     # Contract
     # ------------------------------------------------------------------
     async def connect(self, config: dict[str, Any]) -> None:
+        if config.get("remote_type") == "sftp" and not config.get("host_key"):
+            await self._ask_to_trust_host_key(config)
         fs = _build_fs(config)
         try:
             await self._rc_call("/operations/list", {"fs": fs, "remote": ""})
         except PluginBackendError as error:
+            # File operations after connect stay blocked by rclone itself on
+            # a mismatch; only connect needs the structured answer the UI
+            # shows to the user.
+            is_sftp = config.get("remote_type") == "sftp"
+            if is_sftp and _is_host_key_mismatch(str(error)):
+                raise await self._host_key_mismatch(config) from error
             raise ConnectionFailedError(str(error)) from error
+
+    async def _ask_to_trust_host_key(self, config: dict[str, Any]) -> None:
+        """First connect to an SFTP server: never trust silently. Report
+        the offered key so the user can verify its fingerprint, then
+        reconnect with it pinned -- OpenSSH's "Are you sure you want to
+        continue connecting?" / WinSCP's "Continue connecting and add host
+        key to the cache?"."""
+        _require(config, "host")
+        host, port = config["host"].strip(), _sftp_port(config)
+        key = await probe_host_key(host, port)
+        raise HostKeyUnknownError(
+            f"The authenticity of {host}:{port} can't be established",
+            data=_host_key_data(key, host, port),
+        )
+
+    async def _host_key_mismatch(
+        self, config: dict[str, Any],
+    ) -> HostKeyMismatchError:
+        host, port = config["host"].strip(), _sftp_port(config)
+        import asyncssh
+
+        pinned = [asyncssh.import_public_key(pin) for pin in _pinned_host_keys(config)]
+        # Ask for a key of the pinned algorithm(s), so the fingerprint shown
+        # is the one that actually replaced the pinned key.
+        algorithms = sorted({key.get_algorithm() for key in pinned})
+        try:
+            offered = await probe_host_key(host, port, algorithms=algorithms)
+        except ConnectionFailedError:
+            offered = await probe_host_key(host, port)
+        return HostKeyMismatchError(
+            f"The host key for {host}:{port} has changed",
+            data={
+                **_host_key_data(offered, host, port),
+                "pinned_fingerprints": [
+                    key.get_fingerprint("sha256") for key in pinned
+                ],
+            },
+        )
 
     async def status(self) -> StatusOut:
         if self._rcd_process is None or self._rcd_process.returncode is not None:

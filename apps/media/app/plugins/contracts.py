@@ -65,6 +65,29 @@ class PluginBackendError(RuntimeError):
 
     http_status = 502  # the plugin's own upstream call failed
 
+    def __init__(
+        self, message: str = "", *, data: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        # Structured detail the core can act on (sent as the error body's
+        # `data`), e.g. the server host key a user must confirm.
+        self.data = data or {}
+
+
+class HostKeyUnknownError(PluginBackendError):
+    """No host key is pinned yet. `data` carries the key the server
+    offered, for the user to confirm like an SSH client's first-connect
+    "Are you sure you want to continue connecting?" prompt."""
+
+    http_status = 409
+
+
+class HostKeyMismatchError(PluginBackendError):
+    """The server offered a different host key than the pinned one --
+    either a legitimate key rotation or a man-in-the-middle."""
+
+    http_status = 409
+
 
 class ConnectionFailedError(PluginBackendError):
     """`connect()`/config validation failed against the real backend."""

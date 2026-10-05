@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { LockKeyhole } from "lucide-react";
+import { LockKeyhole, ShieldAlert, ShieldQuestion } from "lucide-react";
 
+import { ConnectionNameField } from "@/components/connection-name-field";
 import { OAuthProviderForm } from "@/components/google-drive-oauth-form";
 import { TelegramLoginForm } from "@/components/telegram-login-form";
 import { StorageProviderIcon } from "@/components/storage-provider-icon";
@@ -11,6 +12,38 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, ApiError, type ProviderConnection, type ProviderType } from "@/lib/api";
+
+/** The SSH host key an SFTP server offered, returned with HTTP 409 when
+ * it is not trusted yet (`host_key_unknown`) or has changed
+ * (`host_key_mismatch`). See apps/media `HostKeyConfirmationRequired`. */
+type OfferedHostKey = {
+  host: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  host_key: string;
+  pinned_fingerprints?: string[];
+};
+
+type HostKeyChallenge = {
+  kind: "host_key_unknown" | "host_key_mismatch";
+  key: OfferedHostKey;
+  /** The request to repeat, with `config.host_key` set, once trusted. */
+  payload: Record<string, unknown> & { config: Record<string, unknown> };
+};
+
+function hostKeyChallenge(
+  error: unknown,
+  payload: HostKeyChallenge["payload"],
+): HostKeyChallenge | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const code = error.body?.error_code;
+  const key = error.body?.host_key as OfferedHostKey | undefined;
+  if ((code !== "host_key_unknown" && code !== "host_key_mismatch") || !key?.host_key) {
+    return null;
+  }
+  return { kind: code, key, payload };
+}
 
 const statusVariant: Record<string, "default" | "secondary" | "destructive"> = {
   available: "default",
@@ -23,16 +56,20 @@ const statusVariant: Record<string, "default" | "secondary" | "destructive"> = {
  * implementation of `POST /providers` (and oauth complete), not two. */
 export function AddStorageForm({
   providerTypes,
+  existingNames = [],
   onCreated,
   onCancel,
 }: {
   providerTypes: ProviderType[];
+  /** The user's current connection names, to suggest an unused one. */
+  existingNames?: string[];
   onCreated: (connection: ProviderConnection) => void;
   onCancel?: () => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [challenge, setChallenge] = useState<HostKeyChallenge | null>(null);
 
   const selected = providerTypes.find((item) => item.id === selectedId) ?? null;
 
@@ -45,19 +82,32 @@ export function AddStorageForm({
     const config = Object.fromEntries(
       selected.fields.map((field) => [field.key, form.get(field.key)]),
     );
+    await submit({
+      provider_type: selected.id,
+      name: form.get("connection_name"),
+      config,
+      import_existing: form.get("import_existing") === "on",
+      mirror_structure: form.get("mirror_structure") === "on",
+    });
+  }
+
+  async function submit(payload: HostKeyChallenge["payload"]) {
+    setSaving(true);
+    setError("");
     try {
       const connection = await api<ProviderConnection>("/providers", {
         method: "POST",
-        body: JSON.stringify({
-          provider_type: selected.id,
-          name: form.get("connection_name"),
-          config,
-          import_existing: form.get("import_existing") === "on",
-          mirror_structure: form.get("mirror_structure") === "on",
-        }),
+        body: JSON.stringify(payload),
       });
+      setChallenge(null);
       onCreated(connection);
     } catch (requestError) {
+      const nextChallenge = hostKeyChallenge(requestError, payload);
+      if (nextChallenge) {
+        setChallenge(nextChallenge);
+        return;
+      }
+      setChallenge(null);
       setError(
         requestError instanceof ApiError
           ? requestError.message
@@ -66,6 +116,16 @@ export function AddStorageForm({
     } finally {
       setSaving(false);
     }
+  }
+
+  /** Pin the offered key and connect again -- the user's "yes" to an SSH
+   * client's "Are you sure you want to continue connecting?". */
+  function trustHostKey() {
+    if (!challenge) return;
+    void submit({
+      ...challenge.payload,
+      config: { ...challenge.payload.config, host_key: challenge.key.host_key },
+    });
   }
 
   if (!selected) {
@@ -114,6 +174,7 @@ export function AddStorageForm({
   if (selected.connect_flow === "oauth") {
     return (
       <OAuthProviderForm
+        existingNames={existingNames}
         onBack={() => setSelectedId(null)}
         onCancel={onCancel}
         onCreated={onCreated}
@@ -125,10 +186,23 @@ export function AddStorageForm({
   if (selected.connect_flow === "session") {
     return (
       <TelegramLoginForm
+        existingNames={existingNames}
         onBack={() => setSelectedId(null)}
         onCancel={onCancel}
         onCreated={onCreated}
         provider={selected}
+      />
+    );
+  }
+
+  if (challenge) {
+    return (
+      <HostKeyPrompt
+        challenge={challenge}
+        error={error}
+        onCancel={() => setChallenge(null)}
+        onTrust={trustHostKey}
+        saving={saving}
       />
     );
   }
@@ -147,15 +221,11 @@ export function AddStorageForm({
         <p className="mt-1 text-sm text-muted-foreground">{selected.description}</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="connection_name">Connection name</Label>
-          <Input
-            defaultValue={selected.name}
-            id="connection_name"
-            name="connection_name"
-            required
-          />
-        </div>
+        <ConnectionNameField
+          existingNames={existingNames}
+          key={selected.id}
+          providerName={selected.name}
+        />
         {selected.fields.map((field) => (
           <div className="space-y-1.5" key={field.key}>
             <Label htmlFor={field.key}>{field.label}</Label>
@@ -224,5 +294,86 @@ export function AddStorageForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** First-connect / changed-key confirmation for SFTP, modeled on OpenSSH
+ * and WinSCP: show the fingerprint, trust nothing until the user says so,
+ * and make a *changed* key look dangerous rather than routine. */
+function HostKeyPrompt({
+  challenge,
+  error,
+  saving,
+  onTrust,
+  onCancel,
+}: {
+  challenge: HostKeyChallenge;
+  error: string;
+  saving: boolean;
+  onTrust: () => void;
+  onCancel: () => void;
+}) {
+  const { key, kind } = challenge;
+  const changed = kind === "host_key_mismatch";
+  const server = key.port === 22 ? key.host : `${key.host}:${key.port}`;
+  const Icon = changed ? ShieldAlert : ShieldQuestion;
+
+  return (
+    <div className="space-y-4" role={changed ? "alert" : undefined}>
+      <div className="flex items-start gap-3">
+        <Icon
+          aria-hidden="true"
+          className={changed ? "mt-0.5 size-5 text-destructive" : "mt-0.5 size-5"}
+        />
+        <div className="space-y-1">
+          <h3 className="text-lg font-semibold">
+            {changed ? "The server's host key has changed" : "Is this the right server?"}
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            {changed
+              ? `The key ${server} sent is not the one saved for it. Someone may be intercepting the connection, or the server was reinstalled. Do not continue unless the server's administrator confirms the new fingerprint.`
+              : `This is the first connection to ${server}. Check that the fingerprint below matches the one the server's administrator gave you, or the output of ssh-keyscan on a trusted network.`}
+          </p>
+        </div>
+      </div>
+      <dl className="space-y-2 rounded-xl border p-4 text-sm">
+        <div>
+          <dt className="text-xs text-muted-foreground">Key type</dt>
+          <dd>{key.algorithm}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">
+            {changed ? "New fingerprint" : "Fingerprint"}
+          </dt>
+          <dd className="break-all font-mono" data-testid="host-key-fingerprint">
+            {key.fingerprint}
+          </dd>
+        </div>
+        {changed && key.pinned_fingerprints?.length ? (
+          <div>
+            <dt className="text-xs text-muted-foreground">Saved fingerprint</dt>
+            {key.pinned_fingerprints.map((fingerprint) => (
+              <dd className="break-all font-mono" key={fingerprint}>
+                {fingerprint}
+              </dd>
+            ))}
+          </div>
+        ) : null}
+      </dl>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <div className="flex justify-end gap-3 border-t pt-4">
+        <Button autoFocus onClick={onCancel} type="button" variant="outline">
+          Cancel
+        </Button>
+        <Button
+          disabled={saving}
+          onClick={onTrust}
+          type="button"
+          variant={changed ? "destructive" : "default"}
+        >
+          {saving ? "Connecting…" : changed ? "Replace key and connect" : "Trust and connect"}
+        </Button>
+      </div>
+    </div>
   );
 }
