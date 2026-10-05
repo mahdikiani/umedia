@@ -559,7 +559,7 @@ async def _create_local(service: ProviderConnectionService, name: str, owner: st
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["My NAS", "ab", "umedia", "my.nas", "my--nas"])
+@pytest.mark.parametrize("name", ["My NAS", "", "umedia", "my.nas", "my--nas"])
 async def test_create_rejects_a_name_that_is_not_a_valid_bucket_name(name: str) -> None:
     service, repository = _service()
 

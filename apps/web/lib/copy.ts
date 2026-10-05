@@ -124,7 +124,7 @@ export const copy = {
     saveName: "Save",
     connectionRenamed: "Connection renamed.",
     connectionNameHelp:
-      "Also its S3 bucket name: 3–63 lowercase letters, numbers, and hyphens.",
+      "Also its S3 bucket name: 1–63 lowercase letters, numbers, and hyphens.",
   },
   fa: {
     brand: "یومدیا",
@@ -249,7 +249,7 @@ export const copy = {
     saveName: "ذخیره",
     connectionRenamed: "نام اتصال تغییر کرد.",
     connectionNameHelp:
-      "این نام، نام باکت S3 هم هست: ۳ تا ۶۳ حرف کوچک انگلیسی، عدد یا خط تیره.",
+      "این نام، نام باکت S3 هم هست: ۱ تا ۶۳ حرف کوچک انگلیسی، عدد یا خط تیره.",
   },
 } as const satisfies Record<Locale, Record<string, string>>;
 

@@ -42,7 +42,7 @@ export function ConnectionNameField({
         className="font-mono"
         id="connection_name"
         maxLength={63}
-        minLength={3}
+        minLength={1}
         name="connection_name"
         onChange={(event) => setValue(event.target.value.toLowerCase())}
         pattern={CONNECTION_NAME_PATTERN}
@@ -56,7 +56,7 @@ export function ConnectionNameField({
         id="connection_name_hint"
       >
         {error ??
-          "Also its S3 bucket name: 3–63 lowercase letters, numbers, and hyphens."}
+          "Also its S3 bucket name: 1–63 lowercase letters, numbers, and hyphens."}
       </p>
     </div>
   );

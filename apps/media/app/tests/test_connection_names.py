@@ -15,7 +15,7 @@ from apps.provider_connections.names import (
 
 @pytest.mark.parametrize(
     "name",
-    ["abc", "my-nas", "r2-media", "a1b", "x" * 63, "0-backup", "media-2"],
+    ["a", "7", "ab", "abc", "my-nas", "r2-media", "x" * 63, "0-backup", "media-2"],
 )
 def test_valid_names(name: str) -> None:
     assert validate_connection_name(name) == name
@@ -24,8 +24,8 @@ def test_valid_names(name: str) -> None:
 @pytest.mark.parametrize(
     ("name", "reason"),
     [
-        ("ab", "3 and 63"),
-        ("x" * 64, "3 and 63"),
+        ("", "1 and 63"),
+        ("x" * 64, "1 and 63"),
         ("My-NAS", "lowercase"),
         ("my_nas", "lowercase"),
         ("my nas", "lowercase"),
@@ -67,12 +67,13 @@ def test_reserved_includes_the_library_bucket() -> None:
         ("  My__NAS..Backup!! ", "my-nas-backup"),
         ("Hugging Face Buckets", "hugging-face-buckets"),
         ("FTP / FTPS", "ftp-ftps"),
-        ("ab", "ab-storage"),
+        ("ab", "ab"),
+        ("X", "x"),
         ("", "storage"),
         ("فایل‌های من", "storage"),
         ("umedia", "umedia-storage"),
         ("xn--test", "xn-test"),
-        ("sthree-x", "x-storage"),
+        ("sthree-x", "x"),
         ("y" * 80, "y" * 63),
     ],
 )
