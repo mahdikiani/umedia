@@ -46,6 +46,21 @@ CONTENT_STREAM_TIMEOUT = httpx.Timeout(
     write=60.0,
     pool=DEFAULT_TIMEOUT_SECONDS,
 )
+
+# Uploads (`POST`/`PUT /resources` with a body): the plugin answers only
+# after the provider has stored the bytes, so the response can take as
+# long as the remote transfer itself. The 10s JSON-RPC read cap killed
+# real 2-6 MB Dropbox -> Telegram copies with `httpx.ReadTimeout`; write
+# is unbounded too, since a slow provider applies back-pressure while the
+# request body streams. Connect/pool stay short so a dead plugin still
+# fails fast. Process-level supervision (PluginProcessManager) covers a
+# hung plugin.
+CONTENT_WRITE_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_TIMEOUT_SECONDS,
+    read=None,
+    write=None,
+    pool=DEFAULT_TIMEOUT_SECONDS,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -308,6 +323,7 @@ class PluginClient:
             retry=False,
             headers=headers,
             content=content,
+            timeout=CONTENT_WRITE_TIMEOUT,
         )
         return Resource.model_validate(response.json())
 
@@ -330,6 +346,7 @@ class PluginClient:
             retry=False,
             headers=headers,
             content=content,
+            timeout=CONTENT_WRITE_TIMEOUT,
         )
         return Resource.model_validate(response.json())
 
