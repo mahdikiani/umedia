@@ -22,6 +22,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
+  connectionMeta,
+  StorageProviderIcon,
+} from "@/components/storage-provider-icon";
+import {
   Table,
   TableBody,
   TableCell,
@@ -29,7 +33,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, LIST_PAGE_SIZE, type MediaFileItem, type Page } from "@/lib/api";
+import {
+  api,
+  LIST_PAGE_SIZE,
+  type MediaFileItem,
+  type Page,
+  type ProviderConnection,
+} from "@/lib/api";
 
 /** Mirrors the backend's TRASH_RETENTION_DAYS (apps/media_files/services.py). */
 const RETENTION_DAYS = 30;
@@ -49,8 +59,6 @@ function formatBytes(bytes: number): string {
   return `${exponent === 0 ? value : value.toFixed(1)} ${units[exponent]}`;
 }
 
-/** Whole days until the nightly purge claims this item (never negative —
- * an overdue item just reads "0 days" until the next midnight run). */
 function daysLeft(deletedAt: string | null | undefined): number {
   if (!deletedAt) return RETENTION_DAYS;
   const elapsedDays = Math.floor(
@@ -61,6 +69,7 @@ function daysLeft(deletedAt: string | null | undefined): number {
 
 export default function TrashPage() {
   const [items, setItems] = useState<MediaFileItem[]>([]);
+  const [connections, setConnections] = useState<ProviderConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -92,11 +101,15 @@ export default function TrashPage() {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    api<Page<MediaFileItem>>(trashListPath())
-      .then((page) => {
+    Promise.all([
+      api<Page<MediaFileItem>>(trashListPath()),
+      api<ProviderConnection[]>("/providers"),
+    ])
+      .then(([page, conns]) => {
         if (cancelled) return;
         setItems(page.items);
         setHasMore(page.has_more);
+        setConnections(conns);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -129,7 +142,7 @@ export default function TrashPage() {
     setBusyUid(item.uid);
     try {
       await api<MediaFileItem>(`/files/${item.uid}/restore`, { method: "POST" });
-      toast.success(`Restored “${item.name}”.`);
+      toast.success(`Restored "${item.name}".`);
       await refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not restore.");
@@ -142,14 +155,23 @@ export default function TrashPage() {
     setBulkBusy(true);
     try {
       const roots = await collectTrashRoots();
+      let failed = 0;
       for (const item of roots) {
-        await api<MediaFileItem>(`/files/${item.uid}/restore`, { method: "POST" });
+        try {
+          await api<MediaFileItem>(`/files/${item.uid}/restore`, { method: "POST" });
+        } catch {
+          failed++;
+        }
       }
-      toast.success(
-        roots.length === 1
-          ? `Restored “${roots[0].name}”.`
-          : `Restored ${roots.length} items.`,
-      );
+      if (failed === 0) {
+        toast.success(
+          roots.length === 1
+            ? `Restored "${roots[0].name}".`
+            : `Restored ${roots.length} items.`,
+        );
+      } else {
+        toast.warning(`Restored ${roots.length - failed} items, ${failed} failed.`);
+      }
       await refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not restore.");
@@ -180,15 +202,26 @@ export default function TrashPage() {
     setBulkBusy(true);
     try {
       const roots = await collectTrashRoots();
+      let failed = 0;
       for (const item of roots) {
-        await api(`/files/${item.uid}?permanent=true`, { method: "DELETE" });
+        try {
+          await api(`/files/${item.uid}?permanent=true`, { method: "DELETE" });
+        } catch {
+          failed++;
+        }
       }
       setPurgingAll(false);
-      toast.success(
-        roots.length === 1
-          ? "Deleted forever."
-          : `Deleted ${roots.length} items forever.`,
-      );
+      if (failed === 0) {
+        toast.success(
+          roots.length === 1
+            ? "Deleted forever."
+            : `Deleted ${roots.length} items forever.`,
+        );
+      } else {
+        toast.warning(
+          `Deleted ${roots.length - failed} items, ${failed} could not be removed.`,
+        );
+      }
       await refresh();
     } catch (error) {
       toast.error(
@@ -249,6 +282,7 @@ export default function TrashPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead className="w-40">Storage</TableHead>
               <TableHead className="w-28">Size</TableHead>
               <TableHead className="w-32">Deleted</TableHead>
               <TableHead className="w-28">Days left</TableHead>
@@ -260,59 +294,78 @@ export default function TrashPage() {
               <TableRow>
                 <TableCell
                   className="py-12 text-center text-sm text-muted-foreground"
-                  colSpan={5}
+                  colSpan={6}
                 >
                   <Trash2 className="mx-auto mb-3 text-muted-foreground" size={20} />
                   The trash is empty.
                 </TableCell>
               </TableRow>
             )}
-            {items.map((item) => (
-              <TableRow key={item.uid}>
-                <TableCell>
-                  <div className="flex items-center gap-2 font-medium">
-                    {item.type === "folder" ? (
-                      <FolderOpen className="text-muted-foreground" size={16} />
+            {items.map((item) => {
+              const meta = connectionMeta(item.provider_connection_id, connections);
+              return (
+                <TableRow key={item.uid}>
+                  <TableCell>
+                    <div className="flex items-center gap-2 font-medium">
+                      {item.type === "folder" ? (
+                        <FolderOpen className="text-muted-foreground" size={16} />
+                      ) : (
+                        <FileIcon className="text-muted-foreground" size={16} />
+                      )}
+                      {item.name}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {meta ? (
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <StorageProviderIcon
+                          providerType={meta.providerType}
+                          variant={meta.variant}
+                          size="sm"
+                        />
+                        <span className="truncate text-xs font-mono">
+                          {meta.name}
+                        </span>
+                      </div>
                     ) : (
-                      <FileIcon className="text-muted-foreground" size={16} />
+                      <span className="text-muted-foreground">—</span>
                     )}
-                    {item.name}
-                  </div>
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {item.type === "folder" ? "—" : formatBytes(item.size)}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {item.deleted_at
-                    ? new Date(item.deleted_at).toLocaleDateString()
-                    : "—"}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {daysLeft(item.deleted_at)}
-                </TableCell>
-                <TableCell>
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      disabled={actionsLocked}
-                      onClick={() => void restore(item)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <RotateCcw size={14} /> Restore
-                    </Button>
-                    <Button
-                      className="text-destructive"
-                      disabled={actionsLocked}
-                      onClick={() => setPurging(item)}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Trash2 size={14} /> Delete forever
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {item.type === "folder" ? "—" : formatBytes(item.size)}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {item.deleted_at
+                      ? new Date(item.deleted_at).toLocaleDateString()
+                      : "—"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {daysLeft(item.deleted_at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        disabled={actionsLocked}
+                        onClick={() => void restore(item)}
+                        size="sm"
+                        variant="outline"
+                      >
+                        <RotateCcw size={14} /> Restore
+                      </Button>
+                      <Button
+                        className="text-destructive"
+                        disabled={actionsLocked}
+                        onClick={() => setPurging(item)}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Trash2 size={14} /> Delete forever
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </div>
@@ -336,7 +389,7 @@ export default function TrashPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete “{purging?.name}” forever?</AlertDialogTitle>
+            <AlertDialogTitle>Delete &ldquo;{purging?.name}&rdquo; forever?</AlertDialogTitle>
             <AlertDialogDescription>
               {purging?.type === "folder"
                 ? "The folder and everything inside it will be removed permanently. This cannot be undone."
