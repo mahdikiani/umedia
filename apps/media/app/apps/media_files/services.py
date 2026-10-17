@@ -322,6 +322,29 @@ async def _hash(content: bytes) -> str:
     return await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
 
 
+# A file whose download keeps failing (e.g. an unreadable symlink: the plugin answers 200 and
+# closes the body early) used to be retried on EVERY sync cycle, forever, one Sentry event each.
+# Remember failures per object in this process and back off exponentially (10 min .. 24 h).
+HASH_RETRY_BASE_SECONDS = 600.0
+HASH_RETRY_MAX_SECONDS = 24 * 3600.0
+HASH_FAILURE_CACHE_LIMIT = 10_000
+_hash_failures: dict[str, tuple[int, float]] = {}  # uid -> (attempts, retry_not_before)
+
+
+def _hash_in_backoff(uid: str, now: float) -> bool:
+    entry = _hash_failures.get(uid)
+    return entry is not None and now < entry[1]
+
+
+def _note_hash_failure(uid: str, now: float) -> int:
+    attempts = _hash_failures.get(uid, (0, 0.0))[0] + 1
+    delay = min(HASH_RETRY_BASE_SECONDS * 2 ** (attempts - 1), HASH_RETRY_MAX_SECONDS)
+    if uid not in _hash_failures and len(_hash_failures) >= HASH_FAILURE_CACHE_LIMIT:
+        _hash_failures.pop(next(iter(_hash_failures)))  # drop the oldest entry
+    _hash_failures[uid] = (attempts, now + delay)
+    return attempts
+
+
 async def _hash_stream(chunks: AsyncIterator[bytes]) -> str:
     digest = hashlib.sha256()
     async for chunk in chunks:
@@ -1470,6 +1493,8 @@ class MediaFileService(MediaFileSearchMixin):
     ) -> int:
         """Hash indexed files in bounded pages without delaying provider sync."""
         completed = 0
+        failed = 0
+        skipped = 0
         after_uid: str | None = None
         while pending := await self._objects.list_missing_hashes(
             provider_connection_id=provider_connection_id,
@@ -1478,6 +1503,9 @@ class MediaFileService(MediaFileSearchMixin):
         ):
             after_uid = pending[-1].uid
             for item in pending:
+                if _hash_in_backoff(item.uid, time.monotonic()):
+                    skipped += 1
+                    continue
                 try:
                     content_hash = await _hash_stream(
                         self._plugins.read_content(
@@ -1487,12 +1515,16 @@ class MediaFileService(MediaFileSearchMixin):
                         ),
                     )
                 except Exception:
-                    logging.exception(
-                        "Content hash failed for %s on connection %s",
-                        item.content_reference,
-                        provider_connection_id,
-                    )
+                    failed += 1
+                    attempts = _note_hash_failure(item.uid, time.monotonic())
+                    if attempts == 1:  # one error event per file; later attempts stay quiet
+                        logging.exception(
+                            "Content hash failed for %s on connection %s",
+                            item.content_reference,
+                            provider_connection_id,
+                        )
                     continue
+                _hash_failures.pop(item.uid, None)
                 stored = await self._objects.set_content_hash_if_unchanged(
                     uid=item.uid,
                     expected_size=item.size,
@@ -1500,6 +1532,13 @@ class MediaFileService(MediaFileSearchMixin):
                     content_hash=content_hash,
                 )
                 completed += int(stored)
+        if failed or skipped:
+            logging.warning(
+                "Content hash pass for connection %s: %d failed, %d in backoff",
+                provider_connection_id,
+                failed,
+                skipped,
+            )
         return completed
 
     async def import_if_enabled(

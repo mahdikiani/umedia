@@ -77,6 +77,7 @@ class FakeMediaPluginGateway:
         self.fail_create = False
         self.fail_update = False
         self.fail_delete = False
+        self.fail_read: set[str] = set()
         #: Raise from `list_resources` when `parent_id` is in this set.
         #: Used to prove an incomplete walk never looks like mass deletion.
         self.fail_list_at: set[str | None] = set()
@@ -177,6 +178,8 @@ class FakeMediaPluginGateway:
         range_header: str | None,
     ) -> AsyncIterator[bytes]:
         self.calls.append(("read", provider_connection_id, content_reference))
+        if content_reference in self.fail_read:
+            raise RuntimeError("simulated truncated plugin download")
         if content_reference in self.store:
             yield self.store[content_reference]
             return
