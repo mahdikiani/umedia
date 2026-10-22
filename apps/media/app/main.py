@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import signal
+import os
 import sys
 from pathlib import Path
 
@@ -10,42 +10,33 @@ from server.server import app
 
 __all__ = ["app"]
 
+#: On SIGTERM uvicorn stops accepting connections and gives open requests
+#: (a download in progress) this long to finish, then runs the app's
+#: lifespan shutdown (background jobs get 10s more, then the plugin
+#: processes up to 5s, stopped together). `stop_grace_period` in the
+#: compose files covers all of it, so Docker does not SIGKILL a clean
+#: shutdown halfway through.
+GRACEFUL_SHUTDOWN_SECONDS = 15
+
 
 async def main() -> None:
     module = Path(__file__).stem
     config = uvicorn.Config(
         f"{module}:app",
         host="0.0.0.0",  # noqa: S104
-        port=8000,
+        # Not UMEDIA_PORT: Docker links and Kubernetes services set
+        # <NAME>_PORT=tcp://ip:port for a service named "umedia".
+        port=int(os.getenv("UMEDIA_LISTEN_PORT", "8000")),
         access_log=True,
         workers=1,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
     server = uvicorn.Server(config)
-
-    # Setup graceful shutdown
-    loop = asyncio.get_running_loop()
-
-    stop_event = asyncio.Event()
-
-    def shutdown(sig: int) -> None:
-        logging.info("Received stop signal %d. Initiating graceful shutdown...", sig)
-        stop_event.set()
-        server.handle_exit(sig=sig, frame=None)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown, sig)
-
-    # Start server in background
-    server_task = asyncio.create_task(server.serve())
-
-    # Wait for signal
-    await stop_event.wait()
-
-    # Now gracefully shutdown server
-    logging.info("Shutdown complete.")
-
-    # Optional: wait for server task to finish if needed
-    server_task.cancel()
+    # uvicorn handles SIGINT/SIGTERM itself and shuts down gracefully; this
+    # just waits for it. A second handler here used to cancel the server
+    # task on the signal, cutting off Starlette's lifespan mid-shutdown
+    # (a CancelledError at deploy time, GlitchTip UMEDIA-5).
+    await server.serve()
 
 
 if __name__ == "__main__":

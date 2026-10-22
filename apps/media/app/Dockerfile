@@ -59,4 +59,9 @@ ENV PYTHONUTF8=1
 # Copy application code
 COPY --chown=user:user . .
 
+# The commit this image was built from; tags every Sentry/GlitchTip event
+# (server/config.py's sentry_release). Last, so a new sha rebuilds nothing.
+ARG UMEDIA_GIT_SHA=
+ENV UMEDIA_GIT_SHA=${UMEDIA_GIT_SHA}
+
 ENTRYPOINT [ "./docker-entrypoint.sh" ]
