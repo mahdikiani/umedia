@@ -78,6 +78,9 @@ class FakeMediaPluginGateway:
         self.fail_update = False
         self.fail_delete = False
         self.fail_read: set[str] = set()
+        #: Raise this exact error from `read_content` before any byte (e.g.
+        #: the `PluginRPCError` a real plugin answers with).
+        self.read_errors: dict[str, Exception] = {}
         #: Raise from `list_resources` when `parent_id` is in this set.
         #: Used to prove an incomplete walk never looks like mass deletion.
         self.fail_list_at: set[str | None] = set()
@@ -185,6 +188,8 @@ class FakeMediaPluginGateway:
         self.calls.append(("read", provider_connection_id, content_reference))
         if content_reference in self.fail_read:
             raise RuntimeError("simulated truncated plugin download")
+        if content_reference in self.read_errors:
+            raise self.read_errors[content_reference]
         if content_reference in self.store:
             yield self.store[content_reference]
             return

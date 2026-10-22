@@ -37,6 +37,7 @@ from plugins.contracts import (
     ResourceNotFoundError,
     ResourceUnavailableError,
     StatusOut,
+    TemporaryProviderError,
     UpdateResourceIn,
     UpstreamTimeoutError,
 )
@@ -133,6 +134,24 @@ def redact_remotes(text: str, *remotes: str | None) -> str:
             text = text.replace(form, REDACTED_REMOTE)
     text = _SECRET_PARAM_RE.sub(r"\1=<redacted>", text)
     return _URL_USERINFO_RE.sub(r"\1:<redacted>@", text)
+
+
+#: `rclone cat` exit codes (rclone docs, "Exit Code"): 3 directory not
+#: found, 4 file not found -- also what a link `cat` cannot follow looks
+#: like on SFTP -- and 5 a temporary error worth retrying.
+CAT_NOT_FOUND_EXIT_CODES = frozenset({3, 4})
+CAT_TEMPORARY_EXIT_CODE = 5
+
+
+def _cat_error(resource_id: str, returncode: int, detail: str) -> PluginBackendError:
+    """404 for "not there" (the core records it and stops re-reading),
+    503 for rclone's own "temporary" verdict, 502 for anything else."""
+    message = f"{resource_id}: rclone cat exited {returncode}: {detail.strip()[-500:]}"
+    if returncode in CAT_NOT_FOUND_EXIT_CODES:
+        return ResourceNotFoundError(message)
+    if returncode == CAT_TEMPORARY_EXIT_CODE:
+        return TemporaryProviderError(message)
+    return PluginBackendError(message)
 
 
 def _free_local_port() -> int:
@@ -763,20 +782,28 @@ class RcloneBackend(PluginBackend):
             stderr=asyncio.subprocess.PIPE,
         )
         assert process.stdout is not None  # noqa: S101 -- PIPE was requested above
-        found_output = False
-        while True:
-            chunk = await process.stdout.read(READ_CHUNK_SIZE)
-            if not chunk:
-                break
-            found_output = True
-            yield chunk
-        returncode = await process.wait()
-        if returncode != 0 and not found_output:
-            stderr = (await process.stderr.read()) if process.stderr else b""
-            # The target starts with `fs`, an inline connection string
-            # (see `redact_remotes`) that rclone quotes in its error text.
+        assert process.stderr is not None  # noqa: S101
+        # Read stderr alongside stdout: a chatty rclone must never block on
+        # a full stderr pipe while we wait for its stdout.
+        stderr_task = asyncio.create_task(process.stderr.read())
+        finished = False
+        try:
+            while chunk := await process.stdout.read(READ_CHUNK_SIZE):
+                yield chunk
+            finished = True
+        finally:
+            # The reader stopped early (client gone, range seek, aclose):
+            # rclone would block on its full stdout pipe forever.
+            if not finished and process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            returncode = await process.wait()
+            stderr = await stderr_task
+        if returncode != 0:
+            # Even after partial output: a short body must not pass for the
+            # whole file (it would be hashed as the file's content).
             detail = redact_remotes(stderr.decode(errors="replace"), fs)
-            raise ResourceNotFoundError(f"{resource_id}: {detail}")
+            raise _cat_error(resource_id, returncode, detail)
 
     async def create_resource(
         self,

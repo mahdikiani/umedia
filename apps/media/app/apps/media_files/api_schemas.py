@@ -178,6 +178,9 @@ class StorageObjectOut(BaseModel):
     #: Folders: why the last sync could not list it (null when it could).
     list_error: str | None = None
     list_error_at: datetime | None = None
+    #: Files: why the content could not be read for hashing (null if it could).
+    hash_error: str | None = None
+    hash_error_at: datetime | None = None
 
     @classmethod
     def from_record(cls, record: StorageObjectRecord) -> "StorageObjectOut":
@@ -198,6 +201,8 @@ class StorageObjectOut(BaseModel):
             updated_at=record.updated_at,
             list_error=record.list_error,
             list_error_at=record.list_error_at,
+            hash_error=record.hash_error,
+            hash_error_at=record.hash_error_at,
         )
 
 

@@ -30,3 +30,6 @@ class StorageObjectRecord:
     list_error: str | None = None
     list_error_status: int | None = None
     list_error_at: datetime | None = None
+    #: Files: why the content could not be read for hashing (404/422).
+    hash_error: str | None = None
+    hash_error_at: datetime | None = None

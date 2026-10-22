@@ -67,6 +67,21 @@ class MediaFileWriteFailedError(BaseHTTPException):
         )
 
 
+class MediaFileContentUnavailableError(BaseHTTPException):
+    """The library has the file, but its provider would not hand over the
+    bytes right now (provider error, plugin unreachable). Raised before any
+    byte is sent, so the client gets a 502 instead of a 200 whose body is
+    cut off."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            status_code=502,
+            error_code="media_file_content_unavailable",
+            detail=detail,
+            message="Could not read the file from its storage provider",
+        )
+
+
 class MediaFileDeleteFailedError(BaseHTTPException):
     def __init__(self, detail: str) -> None:
         super().__init__(

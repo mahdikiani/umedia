@@ -15,6 +15,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from apps.media_files.content_type import serve_content_type
 from apps.media_files.errors import (
+    MediaFileContentUnavailableError,
     MediaFileNotFoundError,
     MediaFilePermissionError,
     MediaFileValidationError,
@@ -29,6 +30,7 @@ from .exceptions import (
     InvalidArgument,
     NoSuchBucket,
     NoSuchKey,
+    ServiceUnavailable,
 )
 from .paths import decode_key, encode_key, file_keys, folder_prefixes
 from .xml import (
@@ -298,6 +300,10 @@ class S3ObjectService:
     ) -> Response | StreamingResponse:
         """GetObject: stream via the media layer (ACL + provider I/O)."""
         record = await self._record_from_key(key, await self.scope_for(bucket))
+        # Before the read starts: an invalid Range must not leave a provider
+        # read (an `rclone cat` process) running with nobody consuming it.
+        size = record.size
+        bounds = _parse_range(range_header, size)
         try:
             record, stream = await self._media_files.read_content(
                 record.uid, actor_user_id=self._user_id, range_header=range_header,
@@ -306,13 +312,16 @@ class S3ObjectService:
             raise NoSuchKey from exc
         except MediaFilePermissionError as exc:
             raise AccessDenied from exc
+        except MediaFileContentUnavailableError as exc:
+            # The provider read failed before any byte: a retryable S3
+            # error now, not a 200 whose body is cut off.
+            raise ServiceUnavailable from exc
 
         headers = _metadata_headers(record)
-        bounds = _parse_range(range_header, record.size)
         if bounds is None:
             return StreamingResponse(stream, status_code=200, headers=headers)
         start, end = bounds
-        headers["Content-Range"] = f"bytes {start}-{end}/{record.size}"
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(end - start + 1)
         return StreamingResponse(stream, status_code=206, headers=headers)
 

@@ -8,10 +8,12 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from apps.resources.errors import (
+    ResourceContentUnavailableError,
     ResourceNotFoundError,
     ResourceStateError,
     ResourceValidationError,
@@ -20,8 +22,10 @@ from apps.resources.errors import (
 from apps.resources.permissions import can_read
 from apps.resources.schemas import ResourceRecord
 from apps.resources.services import ResourceService
+from plugins.client import PluginRPCError
 from plugins.contracts import CreateResourceIn, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
+from plugins.contracts import ResourceNotFoundError as PluginResourceNotFoundError
 
 CONNECTION_ID = "connection-1"
 OWNER_ID = "user-1"
@@ -648,6 +652,85 @@ async def test_read_content_streams_bytes_and_touches_access(
     assert body == b"streamed content"
     assert resource.uid == created.uid
     assert (await repository.get(created.uid)).access_at >= before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (PluginRPCError("returned 404", status_code=404), ResourceNotFoundError),
+        # Refused for good (OneDrive's Personal Vault): the same 404 the
+        # media_files download answers.
+        (PluginRPCError("returned 422", status_code=422), ResourceNotFoundError),
+        (PluginResourceNotFoundError("gone"), ResourceNotFoundError),
+        (
+            PluginRPCError("returned 502", status_code=502),
+            ResourceContentUnavailableError,
+        ),
+        (
+            PluginRPCError("failed: ConnectError", transport_error="ConnectError"),
+            ResourceContentUnavailableError,
+        ),
+    ],
+)
+async def test_read_content_reports_a_failed_read_before_streaming(
+    service: ResourceService,
+    plugins: FakePluginGateway,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected: type[Exception],
+) -> None:
+    created = await service.create(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="a.txt",
+        type_="file",
+        owner_id=OWNER_ID,
+        content=b"x",
+    )
+
+    async def failing(*_args: object, **_kwargs: object) -> AsyncIterator[bytes]:  # noqa: RUF029
+        raise error
+        yield b""  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr(plugins, "read_content", failing)
+    with pytest.raises(expected) as caught:
+        await service.read_content(created.uid, actor_user_id=OWNER_ID)
+    expected_status = 404 if expected is ResourceNotFoundError else 502
+    assert caught.value.status_code == expected_status
+
+
+@pytest.mark.asyncio
+async def test_read_content_closes_the_started_read_when_touch_access_fails(
+    service: ResourceService,
+    plugins: FakePluginGateway,
+    repository: FakeResourceRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = await service.create(
+        provider_connection_id=CONNECTION_ID,
+        parent_id=None,
+        name="a.txt",
+        type_="file",
+        owner_id=OWNER_ID,
+        content=b"x",
+    )
+    closed: list[bool] = []
+
+    async def tracked(*_args: object, **_kwargs: object) -> AsyncIterator[bytes]:  # noqa: RUF029
+        try:
+            yield b"first"
+            yield b"second"
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(plugins, "read_content", tracked)
+    monkeypatch.setattr(
+        repository, "touch_access", AsyncMock(side_effect=RuntimeError("locked")),
+    )
+    with pytest.raises(RuntimeError, match="locked"):
+        await service.read_content(created.uid, actor_user_id=OWNER_ID)
+    assert closed == [True]
 
 
 @pytest.mark.asyncio

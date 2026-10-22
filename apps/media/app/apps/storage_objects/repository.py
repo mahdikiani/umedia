@@ -4,7 +4,7 @@ import builtins
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import StorageObject
@@ -32,6 +32,8 @@ def _to_record(row: StorageObject) -> StorageObjectRecord:
         list_error=row.list_error,
         list_error_status=row.list_error_status,
         list_error_at=row.list_error_at,
+        hash_error=row.hash_error,
+        hash_error_at=row.hash_error_at,
     )
 
 
@@ -40,6 +42,18 @@ def _prepare(changes: dict[str, Any]) -> dict[str, Any]:
     if "metadata" in prepared:
         prepared["object_metadata"] = prepared.pop("metadata")
     return prepared
+
+
+def _content_changed(row: StorageObject, prepared: dict[str, Any]) -> bool:
+    """Whether an upsert says the bytes changed at the provider: a new
+    size or a new `mtime`. A recorded `hash_error` is then stale -- the
+    file is worth reading again."""
+    if "size" in prepared and (prepared["size"] or 0) != (row.size or 0):
+        return True
+    if "object_metadata" not in prepared:
+        return False
+    old_mtime = (row.object_metadata or {}).get("mtime")
+    return (prepared["object_metadata"] or {}).get("mtime") != old_mtime
 
 
 class StorageObjectRepository:
@@ -97,8 +111,18 @@ class StorageObjectRepository:
                 row = StorageObject(last_seen_at=datetime.now(), **prepared)
                 session.add(row)
             else:
+                # Decided on the row itself, not on a copy the caller read
+                # earlier: the hash backfill may have recorded the error in
+                # between, against the old size.
+                hash_error_stale = (
+                    prepared.get("content_hash") is not None
+                    or _content_changed(row, prepared)
+                )
                 for key, value in prepared.items():
                     setattr(row, key, value)
+                if hash_error_stale and "hash_error" not in prepared:
+                    row.hash_error = None
+                    row.hash_error_at = None
                 row.last_seen_at = datetime.now()
                 # A re-seen object is alive again even if a previous sweep
                 # had soft-deleted it.
@@ -162,8 +186,21 @@ class StorageObjectRepository:
         provider_connection_id: str,
         after_uid: str | None = None,
         limit: int = 100,
+        hash_error_before: datetime | None = None,
     ) -> builtins.list[StorageObjectRecord]:
-        """Return a bounded, stable page of active files without hashes."""
+        """Return a bounded, stable page of active files without hashes.
+
+        Files with a recorded `hash_error` are left out, unless the error
+        is older than `hash_error_before` (worth one more try).
+        """
+        unreadable_skipped = (
+            StorageObject.hash_error_at.is_(None)
+            if hash_error_before is None
+            else or_(
+                StorageObject.hash_error_at.is_(None),
+                StorageObject.hash_error_at < hash_error_before,
+            )
+        )
         async with self._session_factory() as session:
             query = select(StorageObject).where(
                 StorageObject.provider_connection_id == provider_connection_id,
@@ -171,6 +208,7 @@ class StorageObjectRepository:
                 StorageObject.content_hash.is_(None),
                 StorageObject.status == "active",
                 StorageObject.is_deleted.is_(False),
+                unreadable_skipped,
             )
             if after_uid is not None:
                 query = query.where(StorageObject.uid > after_uid)
@@ -199,7 +237,31 @@ class StorageObjectRepository:
                     StorageObject.size == expected_size,
                     StorageObject.object_metadata == expected_metadata,
                 )
-                .values(content_hash=content_hash),
+                .values(content_hash=content_hash, hash_error=None, hash_error_at=None),
+            )
+            await session.commit()
+            return result.rowcount == 1
+
+    async def set_hash_error_if_unchanged(
+        self,
+        *,
+        uid: str,
+        expected_size: int,
+        expected_metadata: dict[str, Any],
+        error: str,
+    ) -> bool:
+        """Record why a file's content cannot be read -- only if sync has
+        not refreshed the object meanwhile (same guard as the hash)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(StorageObject)
+                .where(
+                    StorageObject.uid == uid,
+                    StorageObject.content_hash.is_(None),
+                    StorageObject.size == expected_size,
+                    StorageObject.object_metadata == expected_metadata,
+                )
+                .values(hash_error=error[:2000], hash_error_at=datetime.now()),
             )
             await session.commit()
             return result.rowcount == 1

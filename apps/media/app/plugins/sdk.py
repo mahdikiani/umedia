@@ -32,6 +32,7 @@ from .contracts import (
     decode_header_json,
     decode_resource_id,
 )
+from .streams import prime_stream
 
 CONFIG_HEADER = "X-Umedia-Connection-Config"
 METADATA_HEADER = "X-Umedia-Resource-Metadata"
@@ -230,7 +231,10 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
             decode_resource_id(resource_id),
             range_header=range_header,
         )
-        return StreamingResponse(stream)
+        # A backend error before the first byte (missing file, unreadable
+        # link) becomes its real status via the handler above, not a 200
+        # whose body is cut off.
+        return StreamingResponse(await prime_stream(stream))
 
     @app.post("/resources", response_model=Resource)
     async def create_resource(request: Request) -> Resource:

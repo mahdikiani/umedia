@@ -60,6 +60,12 @@ class NoSuchUpload(S3Error):
     status_code = 404
 
 
+class ServiceUnavailable(S3Error):  # noqa: N818 -- the S3 error code
+    code = "ServiceUnavailable"
+    message = "Could not read the object from its storage provider. Please try again."
+    status_code = 503
+
+
 class InvalidArgument(S3Error):
     code = "InvalidArgument"
     message = "Invalid argument"
