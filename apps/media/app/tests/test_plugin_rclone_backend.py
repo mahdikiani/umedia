@@ -312,3 +312,44 @@ def test_build_fs_dispatches_on_remote_type() -> None:
 def test_build_fs_rejects_an_unknown_remote_type() -> None:
     with pytest.raises(ConnectionFailedError, match="Unsupported"):
         _build_fs({"remote_type": "not-a-real-backend"})
+
+
+# ----------------------------------------------------------------------
+# rc error mapping: what the core's sync walk can act on
+# ----------------------------------------------------------------------
+
+
+def test_rc_error_maps_onedrive_personal_vault_to_unavailable() -> None:
+    from plugins.contracts import ResourceUnavailableError
+    from plugins.rclone.backend import _rc_error
+
+    error = _rc_error(
+        500,
+        "error in ListJSON: couldn't list files: invalidRequest: "
+        "invalidResourceId: ObjectHandle is Invalid",
+    )
+    assert type(error) is ResourceUnavailableError
+    assert error.http_status == 422
+
+
+def test_rc_error_maps_rejected_tokens_to_auth_error() -> None:
+    from plugins.contracts import ProviderAuthError
+    from plugins.rclone.backend import _rc_error
+
+    error = _rc_error(
+        500,
+        'couldn\'t list directory: oauth2: "invalid_grant" '
+        '"Token has been expired or revoked."',
+    )
+    assert type(error) is ProviderAuthError
+    assert error.http_status == 401
+
+
+def test_rc_error_keeps_404_and_falls_back_to_502() -> None:
+    from plugins.contracts import PluginBackendError, ResourceNotFoundError
+    from plugins.rclone.backend import _rc_error
+
+    assert type(_rc_error(404, "directory not found")) is ResourceNotFoundError
+    other = _rc_error(500, "googleapi: Error 500: Internal Error")
+    assert type(other) is PluginBackendError
+    assert other.http_status == 502

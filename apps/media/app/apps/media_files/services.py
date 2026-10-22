@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 from apps.s3.auth import generate_presigned_url
 from apps.s3.paths import file_keys
 from apps.storage_objects.schemas import StorageObjectRecord
+from plugins.client import PluginRPCError
 from plugins.contracts import CreateResourceIn, ResourceNotFoundError, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
 from utils.pagination import Page
@@ -97,6 +98,126 @@ TRASH_RETENTION_DAYS = 30
 #: The manifest capability that means "this provider has structure worth
 #: mirroring into" -- flat providers (e.g. Telegram) don't declare it.
 MIRROR_CAPABILITY = "move"
+
+# Inbound sync walk (`import_from_provider`). A folder whose listing fails
+# is skipped and the walk carries on with the rest of the tree; these say
+# when a failure is about the whole connection instead, which stops it.
+
+#: This many folder listings failing in a row means the connection, not
+#: one folder, is broken (e.g. a token that expired mid-walk).
+WALK_MAX_CONSECUTIVE_FOLDER_FAILURES = 5
+#: Plugin answers that mean the connection itself is unusable (bad config,
+#: rejected credentials): every other folder would fail the same way.
+CONNECTION_FAILURE_STATUSES = frozenset({400, 401, 403})
+#: Folder answers that asking again soon will not change: gone, or refused
+#: for good (OneDrive's Personal Vault answers 422). Remembered on the
+#: folder's StorageObject and skipped for `UNLISTABLE_FOLDER_RETRY_AFTER`.
+PERMANENT_FOLDER_STATUSES = frozenset({404, 422})
+UNLISTABLE_FOLDER_RETRY_AFTER = timedelta(days=7)
+#: No response at all: only a read timeout is about the folder (a slow
+#: listing). A refused or saturated socket means the plugin is down.
+FOLDER_TRANSPORT_ERRORS = frozenset({"ReadTimeout"})
+#: A walk that would mark more than max(MISSING_HOLD_MIN_COUNT,
+#: MISSING_HOLD_FRACTION x the connection's indexed objects) missing in one
+#: pass holds that step until the owner confirms the count: a wrong walk
+#: must never look like mass deletion (the trash purges after 30 days).
+MISSING_HOLD_MIN_COUNT = 100
+MISSING_HOLD_FRACTION = 0.10
+#: Folder failures kept in a sync result (it is logged and summarised in
+#: the connection's `last_error`).
+SYNC_RESULT_MAX_FAILURES = 20
+
+
+class SyncWalkAbortedError(RuntimeError):
+    """The walk stopped because folder listings kept failing in a row."""
+
+
+def _is_folder_level_failure(error: BaseException) -> bool:
+    """Whether a failed folder listing is about that folder (skip it and
+    go on) rather than about the connection (stop the walk)."""
+    if not isinstance(error, PluginRPCError):
+        return False
+    if error.status_code is None:
+        return error.transport_error in FOLDER_TRANSPORT_ERRORS
+    return error.status_code not in CONNECTION_FAILURE_STATUSES
+
+
+def _known_unlistable(folder: StorageObjectRecord, now: datetime) -> bool:
+    return (
+        folder.list_error_status in PERMANENT_FOLDER_STATUSES
+        and folder.list_error_at is not None
+        and now - folder.list_error_at < UNLISTABLE_FOLDER_RETRY_AFTER
+    )
+
+
+def _failure_entry(
+    reference: str,
+    *,
+    status: int | None,
+    code: str | None,
+    error: str,
+    skipped: bool = False,
+) -> dict[str, Any]:
+    return {
+        "folder": reference,
+        "status": status,
+        "code": code,
+        "error": error[:300],
+        "skipped": skipped,
+    }
+
+
+def _under_unwalked(
+    reference: str,
+    parent_of: dict[str, str | None],
+    unwalked: set[str],
+) -> bool:
+    """Whether `reference` sits below a folder this walk did not list.
+
+    Follows the indexed `provider_parent_ref` chain, and also matches path
+    prefixes on a `/` boundary (path-addressed providers), so a gap in the
+    chain cannot expose a descendant. `Work/Hacker Space 2` is not under
+    `Work/Hacker Space`.
+    """
+    if not unwalked:
+        return False
+    if any(reference.startswith(f"{folder}/") for folder in unwalked):
+        return True
+    seen: set[str] = set()
+    cursor = parent_of.get(reference)
+    while cursor is not None and cursor not in seen:
+        if cursor in unwalked:
+            return True
+        seen.add(cursor)
+        cursor = parent_of.get(cursor)
+    return False
+
+
+#: A pending folder in the walk: (provider ref, library parent uid, the
+#: folder's StorageObject; None for the root and core-owned folders).
+_WalkItem = tuple[str | None, str, StorageObjectRecord | None]
+
+
+@dataclasses.dataclass
+class _SyncWalk:
+    """What one `import_from_provider` pass has seen so far."""
+
+    connection_id: str
+    now: datetime
+    counts: dict[str, int] = dataclasses.field(
+        default_factory=lambda: dict.fromkeys(
+            ("imported", "updated", "pushed", "restored", "seen"), 0,
+        ),
+    )
+    observed: set[str] = dataclasses.field(default_factory=set)
+    #: Folders whose subtree this pass did not see: nothing below them may
+    #: be marked missing.
+    unwalked: set[str] = dataclasses.field(default_factory=set)
+    failures: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    failed_folders: int = 0
+    skipped_folders: int = 0
+    consecutive_failures: int = 0
+
 
 #: "Not passed" sentinel for `update(parent_id=...)` -- `None` is a real
 #: value there (move to the library root), so absence needs its own marker.
@@ -1546,7 +1667,7 @@ class MediaFileService(MediaFileSearchMixin):
         provider_connection_id: str,
         *,
         actor_user_id: str,
-    ) -> dict[str, int] | None:
+    ) -> dict[str, Any] | None:
         """The connect-time entry point: runs the import only when the
         connection asked for it (`import_existing`). `POST
         /providers/{uid}/sync` calls `import_from_provider` directly --
@@ -1564,7 +1685,8 @@ class MediaFileService(MediaFileSearchMixin):
         provider_connection_id: str,
         *,
         actor_user_id: str,
-    ) -> dict[str, int]:
+        confirm_missing: int | None = None,
+    ) -> dict[str, Any]:
         """Walk the provider, reconcile each object, upsert the index.
 
         Per-file policy (explicit Sync):
@@ -1573,10 +1695,20 @@ class MediaFileService(MediaFileSearchMixin):
         - Ours newer (indexed mtime ahead of remote): push our content to
           the provider when `mirror_structure` is on, then refresh the index.
         - New remote object: import MediaFile under the connection root.
-        - Complete walk only: StorageObjects not observed this pass become
-          `status=missing` and their linked MediaFiles are soft-deleted.
-          A raised listing (or any walk error) skips that missing-mark so
-          a partial scan cannot look like mass deletion.
+        - A folder whose listing fails (timeout, provider error, refused
+          like OneDrive's Personal Vault) is recorded on its StorageObject
+          and skipped with its subtree; the walk goes on. A 404/422 folder
+          is not asked again for `UNLISTABLE_FOLDER_RETRY_AFTER`.
+        - The walk stops (raises) when the failure is about the connection:
+          the root listing fails, the plugin is unreachable, the provider
+          rejects the credentials (400/401/403), or
+          `WALK_MAX_CONSECUTIVE_FOLDER_FAILURES` folders fail in a row.
+          Nothing is marked missing then.
+        - StorageObjects not observed this pass become `status=missing` and
+          their linked MediaFiles are soft-deleted -- except anything under
+          a folder this pass did not list, so a partial scan cannot look
+          like mass deletion. More than the `MISSING_HOLD_*` limit at once
+          is held (counted, not applied) unless `confirm_missing` covers it.
         - Reappear of a previously-missing object restores the same
           MediaFile uid; user trash while the object was still `active`
           is left in trash.
@@ -1592,59 +1724,131 @@ class MediaFileService(MediaFileSearchMixin):
             actor_user_id=actor_user_id,
         )
 
-        imported = 0
-        updated = 0
-        pushed = 0
-        seen = 0
-        restored = 0
-        observed: set[str] = set()
+        walk = _SyncWalk(connection_id=provider_connection_id, now=datetime.now())
         visited: set[str | None] = set()
-        stack: list[tuple[str | None, str]] = [(None, root.uid)]
+        stack: list[_WalkItem] = [(None, root.uid, None)]
         while stack:
-            provider_ref, library_parent_uid = stack.pop()
+            provider_ref, library_parent_uid, folder = stack.pop()
             if provider_ref in visited:
                 continue
             visited.add(provider_ref)
-            resources = await self._plugins.list_resources(
-                provider_connection_id,
-                parent_id=provider_ref,
-            )
-            for resource in resources:
-                seen += 1
-                observed.add(resource.id)
+            resources = await self._list_folder(walk, provider_ref, folder)
+            for resource in resources or []:
+                walk.counts["seen"] += 1
+                walk.observed.add(resource.id)
                 if is_umedia_managed_reference(resource.id):
                     # Core-owned local dump (per-user upload paths). Keep
                     # walking so descendants are observed, but never
                     # import them as library files.
                     if resource.type == "folder":
-                        stack.append((resource.id, library_parent_uid))
+                        stack.append((resource.id, library_parent_uid, None))
                     continue
-                media_file, deltas = await self._sync_listed_resource(
+                media_file, obj, deltas = await self._sync_listed_resource(
                     provider_connection_id,
                     resource,
                     actor_user_id=actor_user_id,
                     library_parent_uid=library_parent_uid,
                     mirror=mirror,
                 )
-                imported += deltas["imported"]
-                updated += deltas["updated"]
-                pushed += deltas["pushed"]
-                restored += deltas["restored"]
+                for key, value in deltas.items():
+                    walk.counts[key] += value
                 if resource.type == "folder":
-                    stack.append((resource.id, media_file.uid))
+                    stack.append((resource.id, media_file.uid, obj))
 
-        missing = await self._mark_unseen_missing(
+        missing, missing_held = await self._mark_unseen_missing(
             provider_connection_id,
-            observed,
+            walk.observed,
+            unwalked=walk.unwalked,
+            confirm_missing=confirm_missing,
         )
         return {
-            "imported": imported,
-            "updated": updated,
-            "pushed": pushed,
-            "seen": seen,
+            **walk.counts,
             "missing": missing,
-            "restored": restored,
+            "failed_folders": walk.failed_folders,
+            "skipped_folders": walk.skipped_folders,
+            "missing_held": missing_held,
+            "failures": walk.failures[:SYNC_RESULT_MAX_FAILURES],
         }
+
+    async def _list_folder(
+        self,
+        walk: _SyncWalk,
+        provider_ref: str | None,
+        folder: StorageObjectRecord | None,
+    ) -> list[PluginResource] | None:
+        """One folder's listing, or None when this pass skips the folder:
+        known to be refused, or its listing just failed for a folder-level
+        reason. Connection-level failures raise and stop the walk."""
+        if folder is not None and _known_unlistable(folder, walk.now):
+            walk.unwalked.add(folder.content_reference)
+            walk.skipped_folders += 1
+            walk.failures.append(_failure_entry(
+                folder.content_reference,
+                status=folder.list_error_status,
+                code=None,
+                error=folder.list_error or "",
+                skipped=True,
+            ))
+            return None
+        try:
+            resources = await self._plugins.list_resources(
+                walk.connection_id,
+                parent_id=provider_ref,
+            )
+        except Exception as error:
+            if provider_ref is None or not _is_folder_level_failure(error):
+                raise
+            await self._folder_failed(walk, provider_ref, folder, error)
+            return None
+        walk.consecutive_failures = 0
+        if folder is not None and folder.list_error_at is not None:
+            await self._objects.update(
+                folder.uid,
+                {"list_error": None, "list_error_status": None, "list_error_at": None},
+            )
+        return resources
+
+    async def _folder_failed(
+        self,
+        walk: _SyncWalk,
+        provider_ref: str,
+        folder: StorageObjectRecord | None,
+        error: PluginRPCError,
+    ) -> None:
+        """Skip the folder's subtree this pass and record why on its
+        StorageObject (a 404/422 makes later walks skip it for a while)."""
+        walk.failed_folders += 1
+        walk.consecutive_failures += 1
+        walk.unwalked.add(provider_ref)
+        walk.failures.append(_failure_entry(
+            provider_ref,
+            status=error.status_code,
+            code=error.code or error.transport_error,
+            error=str(error),
+        ))
+        logging.warning(
+            "Sync of connection %s: cannot list folder %r, skipping its "
+            "subtree this pass: %s",
+            walk.connection_id,
+            provider_ref,
+            error,
+        )
+        if folder is not None:
+            await self._objects.update(
+                folder.uid,
+                {
+                    "list_error": str(error)[:2000],
+                    "list_error_status": error.status_code,
+                    "list_error_at": walk.now,
+                },
+            )
+        if walk.consecutive_failures >= WALK_MAX_CONSECUTIVE_FOLDER_FAILURES:
+            msg = (
+                f"Sync of connection {walk.connection_id} stopped: "
+                f"{walk.consecutive_failures} folder listings failed in a row, "
+                f"last {provider_ref!r}: {error}"
+            )
+            raise SyncWalkAbortedError(msg) from error
 
     async def _ensure_import_root(
         self,
@@ -1691,7 +1895,7 @@ class MediaFileService(MediaFileSearchMixin):
         actor_user_id: str,
         library_parent_uid: str,
         mirror: bool,
-    ) -> tuple[MediaFileRecord, dict[str, int]]:
+    ) -> tuple[MediaFileRecord, StorageObjectRecord, dict[str, int]]:
         """Upsert one listed object and create/restore its MediaFile.
 
         Counter deltas are 0/1 for imported/updated/pushed/restored.
@@ -1755,11 +1959,11 @@ class MediaFileService(MediaFileSearchMixin):
                 storage_object_uid=obj.uid,
             )
             deltas["imported"] = 1
-            return media_file, deltas
+            return media_file, obj, deltas
         if existing.is_deleted and was_missing:
             await self._restore_tree(existing)
             deltas["restored"] = 1
-        return existing, deltas
+        return existing, obj, deltas
 
     async def _apply_freshness_policy(
         self,
@@ -1816,28 +2020,68 @@ class MediaFileService(MediaFileSearchMixin):
         self,
         provider_connection_id: str,
         observed: set[str],
-    ) -> int:
-        """After a complete walk: index rows not seen this pass become
-        `missing` (still listed in Storage browse) and their linked
-        library files go to trash. Already-missing rows are left alone.
+        *,
+        unwalked: set[str] | None = None,
+        confirm_missing: int | None = None,
+    ) -> tuple[int, int]:
+        """After a walk: index rows not seen this pass become `missing`
+        (still listed in Storage browse) and their linked library files go
+        to trash. Already-missing rows are left alone, and so is anything
+        under an `unwalked` folder (its listing failed or was skipped).
+
+        Returns `(marked, held)`. When more rows would go missing than the
+        `MISSING_HOLD_*` limit allows, nothing is marked: the count is
+        logged and returned as `held` until a sync passes a
+        `confirm_missing` at least that large.
         """
-        missing = 0
         indexed = await self._objects.list(
             provider_connection_id=provider_connection_id,
         )
-        for obj in indexed:
-            if (
+        parent_of = {
+            obj.content_reference: obj.provider_parent_ref for obj in indexed
+        }
+        unwalked = unwalked or set()
+        candidates = [
+            obj
+            for obj in indexed
+            if not (
                 obj.content_reference in observed
                 or obj.status == "missing"
                 or is_umedia_managed_reference(obj.content_reference)
-            ):
-                continue
+                or _under_unwalked(obj.content_reference, parent_of, unwalked)
+            )
+        ]
+        if not candidates:
+            return 0, 0
+        present = sum(1 for obj in indexed if obj.status != "missing")
+        limit = max(MISSING_HOLD_MIN_COUNT, int(MISSING_HOLD_FRACTION * present))
+        confirmed = confirm_missing is not None and len(candidates) <= confirm_missing
+        if len(candidates) > limit and not confirmed:
+            groups: dict[str, int] = {}
+            for obj in candidates:
+                top = obj.content_reference.split("/", 1)[0]
+                groups[top] = groups.get(top, 0) + 1
+            largest = sorted(groups.items(), key=lambda item: -item[1])[:10]
+            logging.warning(
+                "Sync of connection %s would mark %d of %d indexed objects "
+                "missing (limit %d); held until the owner confirms that count. "
+                "Largest top-level groups: %s",
+                provider_connection_id,
+                len(candidates),
+                present,
+                limit,
+                ", ".join(f"{name!r}={count}" for name, count in largest),
+            )
+            return 0, len(candidates)
+
+        missing = 0
+        for obj in candidates:
             await self._objects.update(obj.uid, {"status": "missing"})
             missing += 1
             linked = await self._files.get_by_storage_object(obj.uid)
             if linked is not None and not linked.is_deleted:
                 await self._soft_delete_tree(linked)
-        return missing
+        return missing, 0
 
     async def _push_indexed_content(
         self,

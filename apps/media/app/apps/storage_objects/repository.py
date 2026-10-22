@@ -29,6 +29,9 @@ def _to_record(row: StorageObject) -> StorageObjectRecord:
         is_deleted=row.is_deleted,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        list_error=row.list_error,
+        list_error_status=row.list_error_status,
+        list_error_at=row.list_error_at,
     )
 
 
