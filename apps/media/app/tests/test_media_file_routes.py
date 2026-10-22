@@ -414,6 +414,16 @@ async def test_sync_imports_preexisting_provider_files(
         await asyncio.sleep(0.05)
     assert sorted(item["name"] for item in children) == ["docs", "hello.txt"]
 
+    # The walk is still running when those two appear: a file is listed
+    # a moment before it is linked to its StorageObject (until then its
+    # content is a 404), and the nested object is indexed only once the
+    # walk is done.
+    for _ in range(200):
+        status = await client.get(f"/providers/{provider_uid}/sync")
+        if status.json()["status"] == "idle":
+            break
+        await asyncio.sleep(0.05)
+
     imported = next(item for item in children if item["name"] == "hello.txt")
     content = await client.get(f"/files/{imported['uid']}/content")
     assert content.status_code == 200
@@ -476,9 +486,15 @@ async def test_connect_with_import_existing_runs_the_import(
             break
     assert root is not None, "import task never produced the connection root"
 
-    children = (
-        await client.get("/files", params={"parent_id": root["uid"]})
-    ).json()["items"]
+    # The root is created before the walk lists anything under it.
+    children = []
+    for _ in range(100):
+        children = (
+            await client.get("/files", params={"parent_id": root["uid"]})
+        ).json()["items"]
+        if children:
+            break
+        await asyncio.sleep(0.05)
     assert [item["name"] for item in children] == ["already-there.txt"]
 
 
