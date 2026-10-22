@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from apps.provider_connections.repository import ProviderConnectionRepository
 
 from .factory import build_media_file_service_from_state, run_inbound_sync
+from .jobs import job_run
 from .repository import MediaFileRepository
 from .services import TRASH_RETENTION_DAYS, MediaFileService
 
@@ -52,8 +53,21 @@ def schedule_content_hash_backfill(
 
     async def _run() -> None:
         try:
-            service = build_media_file_service_from_state(state)
-            count = await service.hash_missing_content(connection_uid)
+            # Its own trace, run id and `job_runs` record (jobs.py).
+            async with job_run(
+                state,
+                kind="hash",
+                connection_id=connection_uid,
+                trigger="backfill",
+            ) as run:
+                service = build_media_file_service_from_state(state)
+                stats: dict[str, int] = {}
+                count = await service.hash_missing_content(
+                    connection_uid,
+                    stats=stats,
+                )
+                run.result = {"hashed": count, **stats}
+                run.partial = bool(stats.get("failed") or stats.get("unreadable"))
             logger.info(
                 "Content hash backfill for '%s' finished: %d object(s)",
                 connection_uid,

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from apps.media_files.models import (
     InstanceSettings,
+    JobRun,
     LibraryTransfer,
     MediaFile,
     MediaFileObject,
@@ -31,6 +32,7 @@ from server.config import Settings
 
 __all__ = [
     "InstanceSettings",
+    "JobRun",
     "LibraryTransfer",
     "MediaFile",
     "MediaFileObject",

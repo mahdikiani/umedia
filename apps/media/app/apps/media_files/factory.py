@@ -17,6 +17,7 @@ from apps.user_access_keys.factory import (
     build_user_access_key_service_from_state,
 )
 
+from .jobs import job_run
 from .notifications import NotificationRepository, NotificationService
 from .plugin_gateway import MediaPluginGateway
 from .repository import MediaFileRepository
@@ -114,31 +115,42 @@ async def run_inbound_sync(
     same problem every cycle).
     """
     run_id = run_id or uuid4().hex
-    service = build_media_file_service_from_state(state)
     options: dict[str, Any] = {"actor_user_id": actor_user_id}
     if confirm_missing is not None:
         options["confirm_missing"] = confirm_missing
-    try:
-        result = await service.import_from_provider(connection_uid, **options)
-    except Exception as error:
+    # Its own trace, run id and `job_runs` record (apps/media_files/jobs.py).
+    async with job_run(
+        state,
+        kind="sync",
+        connection_id=connection_uid,
+        trigger=trigger,
+        run_id=run_id,
+    ) as run:
+        service = build_media_file_service_from_state(state)
+        try:
+            result = await service.import_from_provider(connection_uid, **options)
+        except Exception as error:
+            await _record_sync_outcome(
+                state,
+                connection_uid,
+                actor_user_id,
+                trigger=trigger,
+                run_id=run_id,
+                problem=_sync_failure_text(error),
+            )
+            raise
+        problem = _sync_incomplete_text(connection_uid, result)
+        run.result = result
+        run.partial = problem is not None
         await _record_sync_outcome(
             state,
             connection_uid,
             actor_user_id,
             trigger=trigger,
             run_id=run_id,
-            problem=_sync_failure_text(error),
+            problem=problem,
         )
-        raise
-    await _record_sync_outcome(
-        state,
-        connection_uid,
-        actor_user_id,
-        trigger=trigger,
-        run_id=run_id,
-        problem=_sync_incomplete_text(connection_uid, result),
-    )
-    return result
+        return result
 
 
 def _sync_failure_text(error: Exception) -> str:

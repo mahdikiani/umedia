@@ -13,11 +13,12 @@ last argv and serves the app over it with uvicorn.
 """
 
 import json
+import logging
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, ClassVar
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -33,9 +34,17 @@ from .contracts import (
     decode_resource_id,
 )
 from .streams import prime_stream
+from .tracing import (
+    CONNECTION_ID_HEADER,
+    REQUEST_ID_HEADER,
+    RUN_ID_HEADER,
+    request_context,
+)
 
 CONFIG_HEADER = "X-Umedia-Connection-Config"
 METADATA_HEADER = "X-Umedia-Resource-Metadata"
+
+logger = logging.getLogger(__name__)
 
 
 class PluginBackend(ABC):
@@ -182,9 +191,19 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
             await backend.shutdown()
 
     app = FastAPI(title="UMedia provider plugin", lifespan=_lifespan)
+    app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(PluginBackendError)
-    def _backend_error(_: Request, error: PluginBackendError) -> JSONResponse:
+    def _backend_error(request: Request, error: PluginBackendError) -> JSONResponse:
+        # One line per failed call, carrying the core's request/run ids.
+        logger.warning(
+            "%s %s -> %d %s: %s",
+            request.method,
+            request.url.path,
+            error.http_status,
+            type(error).__name__,
+            error,
+        )
         return JSONResponse(
             status_code=error.http_status,
             content={
@@ -305,6 +324,72 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
     return app
 
 
+class RequestContextMiddleware:
+    """Puts the core's request/connection/run ids (plugins/tracing.py) in
+    `request_context` for the whole request, streamed body included -- a
+    plain ASGI middleware, so a long content stream keeps them too."""
+
+    _HEADERS: ClassVar[dict[bytes, str]] = {
+        REQUEST_ID_HEADER.lower().encode(): "request_id",
+        CONNECTION_ID_HEADER.lower().encode(): "connection_id",
+        RUN_ID_HEADER.lower().encode(): "run_id",
+    }
+
+    def __init__(self, app: Any) -> None:  # noqa: ANN401 -- any ASGI app
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:  # noqa: ANN401
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        ids = {
+            self._HEADERS[name]: value.decode(errors="replace")[:64]
+            for name, value in scope.get("headers", [])
+            if name in self._HEADERS
+        }
+        token = request_context.set(ids)
+        try:
+            await self.app(scope, receive, send)
+        except Exception:
+            # uvicorn logs it too, but only after the ids are gone.
+            logger.exception("%s %s failed", scope.get("method"), scope.get("path"))
+            raise
+        finally:
+            request_context.reset(token)
+
+
+class JsonLineFormatter(logging.Formatter):
+    """One JSON object per log record, on one line, with the ids of the
+    request being served. PluginProcessManager reads these back: the level
+    survives the pipe, and a traceback stays one entry instead of sixty."""
+
+    MAX_TRACEBACK_CHARS = 8000
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            **request_context.get(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)[
+                -self.MAX_TRACEBACK_CHARS :
+            ]
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def configure_plugin_logging() -> None:
+    """stderr gets JSON lines (see `JsonLineFormatter`). Libraries log at
+    WARNING and up; this package (`plugins.*`) also at INFO."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonLineFormatter())
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.WARNING)
+    logging.getLogger("plugins").setLevel(logging.INFO)
+
+
 async def run_plugin(backend: PluginBackend) -> None:
     """Serve `backend` over the Unix socket PluginProcessManager assigned.
 
@@ -312,7 +397,10 @@ async def run_plugin(backend: PluginBackend) -> None:
     `plugins/process_manager.py`'s `_spawn`.
     """
     socket_path = sys.argv[-1]
+    configure_plugin_logging()
     app = create_plugin_app(backend)
-    config = uvicorn.Config(app, uds=socket_path, log_level="warning")
+    # log_config=None: uvicorn's own loggers (e.g. "Exception in ASGI
+    # application") go through the JSON handler above too.
+    config = uvicorn.Config(app, uds=socket_path, log_level="warning", log_config=None)
     server = uvicorn.Server(config)
     await server.serve()

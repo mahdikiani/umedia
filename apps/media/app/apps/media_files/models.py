@@ -117,6 +117,29 @@ class OperationNotification(BaseEntity):
     read_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
+class JobRun(BaseEntity):
+    """One run of a background job (a sync walk, a content-hash pass).
+
+    `uid` is the run id: the same id is on the job's log lines, on every
+    plugin call it makes (and the plugin's own log lines), and on its
+    GlitchTip events (`job.run_id` tag).
+    """
+
+    __tablename__ = "job_runs"
+
+    kind: Mapped[str] = mapped_column(index=True)  # "sync" | "hash"
+    provider_connection_id: Mapped[str] = mapped_column(index=True)
+    trigger: Mapped[str] = mapped_column()  # "poll" | "manual" | "connect" | ...
+    # "running" | "ok" | "partial" | "failed"
+    status: Mapped[str] = mapped_column(default="running", index=True)
+    started_at: Mapped[datetime] = mapped_column(index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(nullable=True)
+    # Counters and, for a sync, the folders it could not list.
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class MediaFileStar(BaseEntity):
     __tablename__ = "media_file_stars"
     __table_args__ = (

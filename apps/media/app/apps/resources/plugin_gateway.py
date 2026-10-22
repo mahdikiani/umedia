@@ -71,7 +71,10 @@ class PluginResourceGateway:
         config = self._cipher.decrypt_json(connection.encrypted_config)
         if manifest.remote_type:
             config.setdefault("remote_type", manifest.remote_type)
-        client = PluginClient(self._process_manager.socket_path(manifest.process_key))
+        client = PluginClient(
+            self._process_manager.socket_path(manifest.process_key),
+            connection_id=provider_connection_id,
+        )
         return client, config
 
     async def create_resource(

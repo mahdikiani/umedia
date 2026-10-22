@@ -244,6 +244,24 @@ class SyncStatusOut(BaseModel):
     connection_id: str
 
 
+class JobRunOut(BaseModel):
+    """`GET /providers/{uid}/sync/runs` -- one sync walk or hash pass.
+
+    `status`: running | ok | partial (finished, but some folders could not
+    be listed or some files not read -- see `result`) | failed (`error`).
+    """
+
+    run_id: str
+    kind: str
+    trigger: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    result: dict[str, Any]
+    error: str | None
+
+
 class SyncResultOut(BaseModel):
     """Internal/outcome counters from a finished sync job (logged, not the
     HTTP accept body). Kept for service return typing and tests."""

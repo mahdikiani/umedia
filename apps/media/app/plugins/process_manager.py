@@ -6,6 +6,7 @@ is hand-rolled instead of circus/supervisord/s6.
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import sys
@@ -86,6 +87,52 @@ def _minimal_env(extra: dict[str, str] | None) -> dict[str, str]:
     if extra:
         env.update(extra)
     return env
+
+
+MAX_PLUGIN_LOG_LINE_BYTES = 64 * 1024
+
+#: Plugin log levels as the core logs them. ERROR is capped at WARNING:
+#: the failure reaches the core as an error answer, which the core reports
+#: itself (with the same request id), so the plugin line is context, not a
+#: second GlitchTip event.
+_PLUGIN_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.WARNING,
+    "CRITICAL": logging.WARNING,
+}
+_PLUGIN_IDS = ("request_id", "connection_id", "run_id")
+
+
+def log_plugin_line(plugin_id: str, stream_name: str, raw: bytes) -> None:
+    """Re-log one line of a plugin's stdout/stderr in the core.
+
+    Plugins built on the SDK write JSON lines (plugins/sdk.py's
+    `JsonLineFormatter`): keep their level, their request/connection/run
+    ids and the traceback as one entry. Anything else (a library printing
+    to stderr) is logged as plain INFO text, as before.
+    """
+    text = raw.decode(errors="replace").rstrip()
+    record = None
+    if text.startswith("{"):
+        with contextlib.suppress(ValueError):
+            record = json.loads(text)
+    if not isinstance(record, dict) or "message" not in record:
+        logger.info("[plugin:%s:%s] %s", plugin_id, stream_name, text)
+        return
+    ids = {key: str(record[key]) for key in _PLUGIN_IDS if record.get(key)}
+    message = str(record["message"])
+    if record.get("exc"):
+        message = f"{message}\n{record['exc']}"
+    logger.log(
+        _PLUGIN_LEVELS.get(str(record.get("level")), logging.INFO),
+        "[plugin:%s] %s%s",
+        plugin_id,
+        message,
+        f" [{' '.join(f'{k}={v}' for k, v in ids.items())}]" if ids else "",
+        extra={"plugin_id": plugin_id, **ids},
+    )
 
 
 def _health_client(socket_path: Path) -> httpx.AsyncClient:
@@ -244,15 +291,16 @@ class PluginProcessManager:
             return
         with contextlib.suppress(asyncio.CancelledError):
             while True:
-                line = await stream.readline()
+                try:
+                    line = await stream.readline()
+                except ValueError:
+                    # A line over the reader's 64 KiB limit: take what is
+                    # buffered and go on -- a dead drain would block the
+                    # plugin on a full pipe.
+                    line = await stream.read(MAX_PLUGIN_LOG_LINE_BYTES)
                 if not line:
                     return
-                logger.info(
-                    "[plugin:%s:%s] %s",
-                    plugin_id,
-                    stream_name,
-                    line.decode(errors="replace").rstrip(),
-                )
+                log_plugin_line(plugin_id, stream_name, line)
 
     async def _wait_until_healthy(self, socket_path: Path) -> None:
         """Poll `GET /health` until it's 200. Caller wraps this in

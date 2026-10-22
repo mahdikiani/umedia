@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from apps.auth.middleware import resolve_optional_user
 
 from .api_schemas import (
+    JobRunOut,
     LinkIn,
     MediaFileOut,
     MediaFileUpdateIn,
@@ -58,6 +59,7 @@ from .factory import (
     build_transfer_service,
     run_inbound_sync,
 )
+from .jobs import JobRunRepository
 from .schemas import MediaFileRecord
 from .services import UNSET, MediaFileService
 from .transfer_service import TransferCreate
@@ -717,6 +719,38 @@ async def get_sync_status(uid: str, request: Request) -> SyncStatusOut:
         connection_id=uid,
         status="running" if running else "idle",
     )
+
+
+@provider_index_router.get(
+    "/providers/{uid}/sync/runs",
+    response_model=list[JobRunOut],
+)
+async def list_sync_runs(
+    uid: str,
+    request: Request,
+    kind: Annotated[Literal["sync", "hash"] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[JobRunOut]:
+    """The connection's recent sync walks and hash passes, newest first:
+    when they ran, how long, what they found, and which folders they could
+    not list. Owner-only."""
+    await _require_owned_connection(request, uid)
+    repository = JobRunRepository(request.app.state.session_factory)
+    runs = await repository.list_for_connection(uid, kind=kind, limit=limit)
+    return [
+        JobRunOut(
+            run_id=run.uid,
+            kind=run.kind,
+            trigger=run.trigger,
+            status=run.status,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            duration_ms=run.duration_ms,
+            result=run.result,
+            error=run.error,
+        )
+        for run in runs
+    ]
 
 
 @provider_index_router.post(
