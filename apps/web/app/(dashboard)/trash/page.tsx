@@ -103,7 +103,8 @@ export default function TrashPage() {
     setLoading(true);
     Promise.all([
       api<Page<MediaFileItem>>(trashListPath()),
-      api<ProviderConnection[]>("/providers"),
+      // Storage names are cosmetic; a failing /providers must not hide the trash.
+      api<ProviderConnection[]>("/providers").catch(() => []),
     ])
       .then(([page, conns]) => {
         if (cancelled) return;

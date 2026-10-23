@@ -4,10 +4,11 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv==0.7.10
 
-COPY pyproject.toml pyproject.toml
-
-# RUN uv sync --no-dev --no-cache --no-install-project
-RUN uv pip install --system --no-cache-dir .
+# Install exactly what uv.lock pins (not whatever the ranges in
+# pyproject.toml resolve to today), without dev deps or the project itself.
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-hashes --no-emit-project -o /tmp/requirements.lock \
+    && uv pip install --system --no-cache-dir -r /tmp/requirements.lock
 
 
 FROM python:3.13-slim AS fast-server

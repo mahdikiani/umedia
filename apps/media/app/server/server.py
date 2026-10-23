@@ -216,7 +216,9 @@ app = app_factory.create_app(
 )
 app.middleware("http")(jwt_guard)
 
-_cors_regex = os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.uln\.me").strip() or None
+# Off by default: with allow_credentials=True a wildcard-subdomain regex lets
+# every sibling host send credentialed requests. Opt in per deployment.
+_cors_regex = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
 _cors_origins = config.Settings().cors_origins or ["http://localhost:8000"]
 app.add_middleware(
     CORSMiddleware,
