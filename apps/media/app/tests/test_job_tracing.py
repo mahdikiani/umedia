@@ -30,6 +30,7 @@ from plugins.contracts import Resource as PluginResource
 from plugins.contracts import ResourceUnavailableError, encode_header_json
 from plugins.process_manager import PluginProcessManager, log_plugin_line
 from plugins.sdk import JsonLineFormatter, PluginBackend, create_plugin_app
+from apps.provider_connections import routes as connection_routes
 from plugins.tracing import current_run_id
 from tests.media_file_helpers import FakeConnection, Harness, build_harness
 
@@ -431,3 +432,43 @@ async def test_a_hash_pass_is_recorded_as_its_own_run(
     )
     assert run.status == "ok"
     assert run.result == {"hashed": 1, "failed": 0, "in_backoff": 0, "unreadable": 0}
+
+
+async def test_a_connect_time_import_that_skipped_folders_is_partial(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connecting with `import_existing` walks the provider like a sync. An
+    import that could not list a folder (OneDrive's Personal Vault) is
+    recorded `partial`, as a poll or manual sync would be, not complete."""
+    monkeypatch.setattr(
+        "apps.media_files.factory.build_media_file_service_from_state",
+        lambda _state: harness.service,
+    )
+    monkeypatch.setattr(
+        connection_routes, "_repository", lambda _request: harness.connections,
+    )
+    monkeypatch.setattr(worker, "schedule_content_hash_backfill", lambda *_: None)
+    harness.plugins.listings[CONNECTION_ID] = {
+        None: [
+            PluginResource(id="Personal Vault", type="folder", name="Personal Vault"),
+        ],
+    }
+    harness.plugins.list_errors["Personal Vault"] = PluginRPCError(
+        "returned 422", status_code=422, code="ResourceUnavailableError",
+    )
+    state = SimpleNamespace(session_factory=harness.session_factory, import_tasks=set())
+
+    connection_routes._schedule_import(
+        SimpleNamespace(app=SimpleNamespace(state=state)), CONNECTION_ID, ACTOR_ID,
+    )
+    await asyncio.gather(*state.import_tasks)
+
+    (run,) = await JobRunRepository(harness.session_factory).list_for_connection(
+        CONNECTION_ID,
+    )
+    assert run.kind == "sync"
+    assert run.trigger == "connect"
+    assert run.status == "partial"
+    assert run.error is None
+    assert run.result["failed_folders"] == 1
+    assert run.result["failures"][0]["folder"] == "Personal Vault"

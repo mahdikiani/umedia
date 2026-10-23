@@ -148,6 +148,7 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
     from apps.media_files.factory import (
         build_media_file_service_from_state,
         build_notification_service_from_state,
+        sync_is_incomplete,
     )
     from apps.media_files.jobs import job_run
 
@@ -171,6 +172,9 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
                         actor_user_id=actor_uid,
                     )
                     run.result = result or {}
+                    # Folders it could not list: recorded `partial`, as a
+                    # poll or manual sync would be, not as a complete import.
+                    run.partial = sync_is_incomplete(run.result)
                 from apps.media_files.worker import schedule_content_hash_backfill
 
                 # Only after an import: without one nothing is indexed yet,

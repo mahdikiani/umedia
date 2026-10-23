@@ -141,7 +141,7 @@ async def run_inbound_sync(
             raise
         problem = _sync_incomplete_text(connection_uid, result)
         run.result = result
-        run.partial = problem is not None
+        run.partial = sync_is_incomplete(result)
         await _record_sync_outcome(
             state,
             connection_uid,
@@ -151,6 +151,16 @@ async def run_inbound_sync(
             problem=problem,
         )
         return result
+
+
+def sync_is_incomplete(result: dict[str, Any]) -> bool:
+    """Whether a sync pass finished but left something out: folders it
+    could not list (e.g. OneDrive's Personal Vault) or missing objects it
+    held back from trash. Its job run is then `partial`, not `ok`; the
+    poll/manual sync and the connect-time import both use this rule."""
+    return any(
+        result.get(key) for key in ("failed_folders", "skipped_folders", "missing_held")
+    )
 
 
 def _sync_failure_text(error: Exception) -> str:
