@@ -44,6 +44,11 @@ HOST_KEY_PROBE_TIMEOUT_SECONDS = 10.0
 RCD_STOP_TIMEOUT_SECONDS = 5.0
 RC_CALL_TIMEOUT_SECONDS = 30.0
 READ_CHUNK_SIZE = 64 * 1024
+# Remote types whose listings carry a content hash at no extra cost (the
+# provider stores it). sftp/ftp/webdav are left out on purpose: rclone would
+# either have none or compute it with a remote command or a full download,
+# which is exactly the work this avoids.
+NATIVE_HASH_REMOTES = frozenset({"s3", "google_drive", "dropbox", "onedrive"})
 
 
 def _free_local_port() -> int:
@@ -509,6 +514,11 @@ class RcloneBackend(PluginBackend):
 
     def _to_resource(self, item: dict[str, Any]) -> Resource:
         path = item["Path"]
+        hashes = {
+            name.lower(): value
+            for name, value in (item.get("Hashes") or {}).items()
+            if value
+        }
         parent = "/".join(path.split("/")[:-1]) or None
         return Resource(
             id=path,
@@ -517,6 +527,7 @@ class RcloneBackend(PluginBackend):
             parent_id=parent,
             size=None if item.get("IsDir") else item.get("Size"),
             content_type=item.get("MimeType"),
+            hashes={} if item.get("IsDir") else hashes,
         )
 
     # ------------------------------------------------------------------
@@ -587,10 +598,10 @@ class RcloneBackend(PluginBackend):
         parent_id: str | None,
     ) -> list[Resource]:
         fs = _build_fs(config)
-        result = await self._rc_call(
-            "/operations/list",
-            {"fs": fs, "remote": parent_id or ""},
-        )
+        params: dict[str, Any] = {"fs": fs, "remote": parent_id or ""}
+        if config.get("remote_type") in NATIVE_HASH_REMOTES:
+            params["opt"] = {"showHash": True}
+        result = await self._rc_call("/operations/list", params)
         return [self._to_resource(item) for item in result.get("list", [])]
 
     async def get_resource(self, config: dict[str, Any], resource_id: str) -> Resource:

@@ -20,6 +20,7 @@ def _to_record(row: StorageObject) -> StorageObjectRecord:
         type=row.type,
         name=row.name,
         content_hash=row.content_hash,
+        hash_algorithm=row.hash_algorithm,
         content_type=row.content_type,
         size=row.size,
         metadata=dict(row.object_metadata or {}),
@@ -196,10 +197,42 @@ class StorageObjectRepository:
                     StorageObject.size == expected_size,
                     StorageObject.object_metadata == expected_metadata,
                 )
-                .values(content_hash=content_hash),
+                .values(content_hash=content_hash, hash_algorithm="sha256"),
             )
             await session.commit()
             return result.rowcount == 1
+
+    async def hash_progress(self, *, provider_connection_id: str) -> dict[str, int]:
+        """Counts of active files by how (or whether) they are fingerprinted:
+        `computed` (UMedia SHA-256), `native` (provider-reported) and
+        `pending` (no hash yet, waiting for the download backfill)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(
+                    StorageObject.content_hash.is_(None),
+                    StorageObject.hash_algorithm == "sha256",
+                    func.count(),
+                )
+                .where(
+                    StorageObject.provider_connection_id == provider_connection_id,
+                    StorageObject.type == "file",
+                    StorageObject.status == "active",
+                    StorageObject.is_deleted.is_(False),
+                )
+                .group_by(
+                    StorageObject.content_hash.is_(None),
+                    StorageObject.hash_algorithm == "sha256",
+                ),
+            )
+            counts = {"computed": 0, "native": 0, "pending": 0}
+            for missing, is_sha256, total in result.all():
+                if missing:
+                    counts["pending"] += total
+                elif is_sha256:
+                    counts["computed"] += total
+                else:
+                    counts["native"] += total
+            return counts
 
     async def count(
         self,

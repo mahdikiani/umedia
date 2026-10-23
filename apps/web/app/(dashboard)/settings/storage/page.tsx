@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
   Dialog,
   DialogContent,
@@ -39,10 +40,20 @@ import {
 } from "@/lib/api";
 
 const SYNC_POLL_MS = 1500;
+const HASH_POLL_MS = 3000;
 
 type SyncStatus = {
   status: "idle" | "running";
   connection_id: string;
+};
+
+type HashProgress = {
+  connection_id: string;
+  total: number;
+  native: number;
+  computed: number;
+  pending: number;
+  running: boolean;
 };
 
 type ConnectionFlags = Partial<
@@ -278,6 +289,7 @@ function StorageConnectionCard({
   text: ReturnType<typeof useCopy>;
 }) {
   const [syncing, setSyncing] = useState(false);
+  const [hashes, setHashes] = useState<HashProgress | null>(null);
   const startPollingRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -311,6 +323,34 @@ function StorageConnectionCard({
       startPollingRef.current = null;
     };
   }, [connection.uid]);
+
+  // Fingerprinting keeps going in the background after a sync finishes, so
+  // keep polling while files are pending (and re-check once a sync ends).
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const next = await api<HashProgress>(
+          `/providers/${connection.uid}/hashes`,
+        );
+        if (!active) return;
+        setHashes(next);
+        if (next.pending > 0 || next.running || syncing) {
+          timer = setTimeout(() => void poll(), HASH_POLL_MS);
+        }
+      } catch {
+        // Progress is informational; stay quiet if it can't be read.
+      }
+    };
+    void poll();
+
+    return () => {
+      active = false;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [connection.uid, syncing]);
 
   async function sync() {
     if (syncing) return;
@@ -385,6 +425,26 @@ function StorageConnectionCard({
           {syncing ? text.syncing : text.syncNow}
         </Button>
       </div>
+
+      {hashes !== null && hashes.pending > 0 && (
+        <div className="space-y-1.5 border-t px-4 py-3">
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>{text.hashProgress}</span>
+            <span className="tabular-nums">
+              {hashes.total - hashes.pending} / {hashes.total}
+            </span>
+          </div>
+          <Progress
+            aria-label={text.hashProgress}
+            value={((hashes.total - hashes.pending) / hashes.total) * 100}
+          />
+          <p className="text-xs text-muted-foreground">
+            {text.hashProgressDetail
+              .replace("{native}", String(hashes.native))
+              .replace("{computed}", String(hashes.computed))}
+          </p>
+        </div>
+      )}
 
       <details className="group border-t px-4">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-3 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card [&::-webkit-details-marker]:hidden">

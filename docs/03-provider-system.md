@@ -118,6 +118,17 @@ in the shared contract suite (`tests/plugin_contract.py`) while building
 the `local` plugin, which would otherwise have required every provider to
 fake stable ids across renames.
 
+**A resource may carry provider hashes.** `Resource.hashes` maps an
+algorithm name (`md5`, `sha1`, `sha256`, `dropbox`, `quickxor`, `xet`, ...)
+to the lowercase hex digest the provider already knows. Plugins fill it only
+when it comes free with the listing (the `rclone` plugin asks for it on
+`s3`, `google_drive`, `dropbox` and `onedrive`, never on remotes where rclone
+would have to compute it). The core indexes the strongest one
+(`apps/media_files/hashing.py`) with its algorithm in
+`StorageObject.hash_algorithm`, and only downloads to compute a SHA-256 for
+files that have none. `GET /providers/{uid}/hashes` reports how many files
+are `native`, `computed` or `pending`.
+
 ### Manifest
 
 Each plugin directory carries a `plugin.json`. Example — the `rclone`

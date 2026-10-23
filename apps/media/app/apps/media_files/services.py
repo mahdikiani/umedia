@@ -688,6 +688,7 @@ class MediaFileService(
             "type": plugin_resource.type or "file",
             "name": plugin_resource.name or name,
             "content_hash": await _hash(content),
+            "hash_algorithm": "sha256",
             "content_type": index_content_type(
                 name,
                 plugin_resource.content_type,
@@ -794,6 +795,7 @@ class MediaFileService(
             {
                 "content_reference": plugin_resource.id,
                 "content_hash": await _hash(content),
+            "hash_algorithm": "sha256",
                 "content_type": index_content_type(
                     current.name,
                     plugin_resource.content_type,

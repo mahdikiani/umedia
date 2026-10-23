@@ -27,6 +27,10 @@ class Resource(BaseModel):
     content_reference: str | None = None
     size: int | None = None
     content_type: str | None = None
+    #: Content hashes the provider already knows (algorithm -> lowercase
+    #: hex), reported from its own listing so the core need not download the
+    #: file to fingerprint it. Empty when the provider has none for free.
+    hashes: dict[str, str] = Field(default_factory=dict)
 
 
 class StatusOut(BaseModel):

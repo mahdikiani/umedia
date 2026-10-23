@@ -26,3 +26,4 @@ class StorageObjectRecord:
     created_at: datetime
     updated_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
+    hash_algorithm: str | None = None

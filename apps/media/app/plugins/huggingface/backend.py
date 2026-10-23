@@ -209,8 +209,11 @@ class HuggingFaceBackend(PluginBackend):
     def _to_resource(self, entry: BucketFile | BucketFolder) -> Resource:
         is_file = isinstance(entry, BucketFile)
         metadata: dict[str, Any] = {}
+        hashes: dict[str, str] = {}
         if is_file:
             metadata["xet_hash"] = entry.xet_hash
+            if entry.xet_hash:
+                hashes["xet"] = entry.xet_hash
             if entry.mtime:
                 metadata["mtime"] = entry.mtime.timestamp()
         return Resource(
@@ -220,6 +223,7 @@ class HuggingFaceBackend(PluginBackend):
             parent_id=_parent(entry.path),
             size=entry.size if is_file else None,
             metadata=metadata,
+            hashes=hashes,
         )
 
     def _folder(self, path: str) -> Resource:
