@@ -11,7 +11,8 @@ pass:
 - `plugins.tracing.current_run_id`, so each plugin call (and the plugin's
   log lines about it) carries the run id;
 - a `job_runs` row: started/finished, status, counters, error;
-- a start and a finish log line with the run id and duration.
+- a start and a finish log line with the run id and duration, both
+  inside the scope; a failed run's finish line is its GlitchTip event.
 
 Bookkeeping is best effort: a failure to write the record never changes
 the job's own outcome.
@@ -148,33 +149,21 @@ async def job_run(
     trigger: str,
     run_id: str | None = None,
 ) -> AsyncIterator[JobRunHandle]:
-    """Run one background job under its own trace, ids and record."""
+    """Run one background job under its own trace, ids and record.
+
+    Everything the run logs happens inside its isolation scope and
+    transaction, the finish line included. A failed run's finish line is
+    an ERROR with the traceback, so its GlitchTip event carries the job
+    tags and the job's trace. The caller's own `logger.exception` for the
+    same exception after it propagates is then dropped by the SDK's dedupe
+    integration (same exception object), instead of being a second,
+    untagged event on the process-wide trace.
+    """
     handle = JobRunHandle(run_id=run_id or uuid4().hex)
     repository = _repository(state)
     started_at = datetime.now()
     started = time.monotonic()
-    if repository is not None:
-        await _best_effort(
-            "record the start of",
-            handle.run_id,
-            repository.start({
-                "uid": handle.run_id,
-                "kind": kind,
-                "provider_connection_id": connection_id,
-                "trigger": trigger,
-                "started_at": started_at,
-            }),
-        )
     token = current_run_id.set(handle.run_id)
-    logger.info(
-        "Job %s started: connection=%s trigger=%s run_id=%s",
-        kind,
-        connection_id,
-        trigger,
-        handle.run_id,
-    )
-    status = "failed"
-    error_text: str | None = None
     try:
         with sentry_sdk.isolation_scope() as scope:
             # A trace of its own: events from this run are not lumped in
@@ -188,40 +177,97 @@ async def job_run(
                 op=f"job.{kind}",
                 name=f"{kind} {connection_id}",
             ):
-                yield handle
-        status = "partial" if handle.partial else "ok"
-    except BaseException as error:
-        error_text = f"{type(error).__name__}: {error}"[:2000]
-        raise
+                if repository is not None:
+                    await _best_effort(
+                        "record the start of",
+                        handle.run_id,
+                        repository.start({
+                            "uid": handle.run_id,
+                            "kind": kind,
+                            "provider_connection_id": connection_id,
+                            "trigger": trigger,
+                            "started_at": started_at,
+                        }),
+                    )
+                logger.info(
+                    "Job %s started: connection=%s trigger=%s run_id=%s",
+                    kind,
+                    connection_id,
+                    trigger,
+                    handle.run_id,
+                )
+                failure: BaseException | None = None
+                try:
+                    yield handle
+                except BaseException as error:
+                    failure = error
+                    raise
+                finally:
+                    await _finish(
+                        repository,
+                        handle,
+                        kind=kind,
+                        connection_id=connection_id,
+                        started_at=started_at,
+                        duration_ms=round((time.monotonic() - started) * 1000),
+                        failure=failure,
+                    )
     finally:
         current_run_id.reset(token)
-        duration_ms = round((time.monotonic() - started) * 1000)
-        (logger.info if status == "ok" else logger.warning)(
-            "Job %s %s in %.1fs: connection=%s run_id=%s%s",
-            kind,
-            status,
-            duration_ms / 1000,
-            connection_id,
+
+
+async def _finish(
+    repository: JobRunRepository | None,
+    handle: JobRunHandle,
+    *,
+    kind: str,
+    connection_id: str,
+    started_at: datetime,
+    duration_ms: int,
+    failure: BaseException | None,
+) -> None:
+    """Record the end of a run, then log its finish line. Called inside the
+    run's scope; the line comes last so that, for a failed run, it is the
+    last exception reported before the caller sees it (dedupe compares
+    against the last one only)."""
+    if failure is None:
+        status = "partial" if handle.partial else "ok"
+        error_text = None
+    else:
+        status = "failed"
+        error_text = f"{type(failure).__name__}: {failure}"[:2000]
+    if repository is not None:
+        await _best_effort(
+            "record the end of",
             handle.run_id,
-            f" error={error_text}" if error_text else "",
+            repository.finish(
+                handle.run_id,
+                {
+                    "status": status,
+                    "finished_at": datetime.now(),
+                    "duration_ms": duration_ms,
+                    "result": handle.result,
+                    "error": error_text,
+                },
+            ),
         )
-        if repository is not None:
-            await _best_effort(
-                "record the end of",
-                handle.run_id,
-                repository.finish(
-                    handle.run_id,
-                    {
-                        "status": status,
-                        "finished_at": datetime.now(),
-                        "duration_ms": duration_ms,
-                        "result": handle.result,
-                        "error": error_text,
-                    },
-                ),
-            )
-            await _best_effort(
-                "prune runs before",
-                handle.run_id,
-                repository.prune(kind=kind, older_than=started_at - JOB_RUN_RETENTION),
-            )
+        await _best_effort(
+            "prune runs before",
+            handle.run_id,
+            repository.prune(kind=kind, older_than=started_at - JOB_RUN_RETENTION),
+        )
+    if isinstance(failure, Exception):
+        log, exc_info = logger.error, failure
+    else:
+        # A partial run, or one cancelled at shutdown: not an error event.
+        log, exc_info = (logger.info if status == "ok" else logger.warning), None
+    log(
+        "Job %s %s in %.1fs: connection=%s run_id=%s%s",
+        kind,
+        status,
+        duration_ms / 1000,
+        connection_id,
+        handle.run_id,
+        f" error={error_text}" if error_text else "",
+        exc_info=exc_info,
+    )

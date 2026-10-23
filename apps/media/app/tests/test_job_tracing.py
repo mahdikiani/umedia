@@ -18,6 +18,8 @@ import httpx
 import pytest
 import pytest_asyncio
 import sentry_sdk
+from sentry_sdk.integrations.dedupe import DedupeIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
 from apps.media_files import worker
@@ -41,7 +43,13 @@ def _loggers_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     every logger created before it (these included). In production uvicorn's
     own logging config, applied right after, enables them again; under
     pytest nothing does, so caplog would see nothing."""
-    for name in ("plugins.client", "plugins.process_manager", "plugins.sdk"):
+    for name in (
+        "plugins.client",
+        "plugins.process_manager",
+        "plugins.sdk",
+        "apps.media_files.jobs",
+        "apps.media_files.worker",
+    ):
         monkeypatch.setattr(logging.getLogger(name), "disabled", False)
 
 
@@ -249,6 +257,10 @@ def sentry_events() -> _Events:
         transport=_Transport,
         default_integrations=False,
         auto_enabling_integrations=False,
+        # The two defaults a job failure goes through in production: an
+        # ERROR line becomes an event, and the same exception reported
+        # twice (the job, then its caller) is sent once.
+        integrations=[LoggingIntegration(), DedupeIntegration()],
     )
     yield events
     sentry_sdk.get_client().close()
@@ -281,6 +293,47 @@ async def test_each_run_gets_its_own_trace_tags_and_run_id(
     assert (
         first["contexts"]["trace"]["trace_id"]
         != second["contexts"]["trace"]["trace_id"]
+    )
+
+
+async def test_a_failed_run_is_reported_once_inside_its_own_scope(
+    harness: Harness, sentry_events: _Events, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed run's GlitchTip event has the run's tags and its own trace:
+    it is reported inside the run's scope. The caller logging the same
+    exception again (every job caller does) adds no second, untagged
+    event on the process-wide trace."""
+
+    class _FailingService:
+        async def hash_missing_content(self, *_args: object, **_kwargs: object) -> int:
+            raise RuntimeError("token expired")
+
+    monkeypatch.setattr(
+        worker,
+        "build_media_file_service_from_state",
+        lambda _state: _FailingService(),
+    )
+    state = SimpleNamespace(session_factory=harness.session_factory, hash_tasks={})
+    sentry_sdk.capture_message("outside any job")
+
+    worker.schedule_content_hash_backfill(state, CONNECTION_ID)
+    await state.hash_tasks[CONNECTION_ID]
+
+    (run,) = await JobRunRepository(harness.session_factory).list_for_connection(
+        CONNECTION_ID, kind="hash",
+    )
+    assert run.status == "failed"
+    outside, *reported = sentry_events.events
+    (event,) = reported
+    assert event["level"] == "error"
+    assert event["exception"]["values"][-1]["value"] == "token expired"
+    assert event["tags"]["job.run_id"] == run.uid
+    assert event["tags"]["job.kind"] == "hash"
+    assert event["tags"]["job.trigger"] == "backfill"
+    assert event["tags"]["connection_id"] == CONNECTION_ID
+    assert (
+        event["contexts"]["trace"]["trace_id"]
+        != outside["contexts"]["trace"]["trace_id"]
     )
 
 
