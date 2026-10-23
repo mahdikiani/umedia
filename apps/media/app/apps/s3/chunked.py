@@ -9,7 +9,8 @@ def unwrap_aws_chunked_body(body: bytes) -> bytes:
     """Return the payload inside aws-chunked framing, or `body` unchanged."""
     if not body or b";chunk-signature=" not in body[:256]:
         first_line = body.split(b"\r\n", 1)[0]
-        if not first_line or any(byte not in b"0123456789abcdefABCDEF" for byte in first_line):
+        hex_digits = b"0123456789abcdefABCDEF"
+        if not first_line or any(byte not in hex_digits for byte in first_line):
             return body
     offset = 0
     parts: list[bytes] = []

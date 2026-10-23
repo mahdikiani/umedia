@@ -6,9 +6,10 @@ rules (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.h
 with two deliberate differences: no dots, and a minimum of one character
 instead of AWS's three (product decision). botocore accepts 1+ chars;
 clients that enforce AWS's 3-char minimum client-side (MinIO's SDK
-validator, for one) cannot address 1-2 character buckets. A dot would put the bucket on a deeper
-DNS level in virtual-host addressing (`{bucket}.{endpoint}`), which the
-wildcard certificate and `vhost.bucket_from_hostname` do not cover.
+validator, for one) cannot address 1-2 character buckets. A dot would put the
+bucket on a deeper DNS level in virtual-host addressing
+(`{bucket}.{endpoint}`), which the wildcard certificate and
+`vhost.bucket_from_hostname` do not cover.
 """
 
 import re

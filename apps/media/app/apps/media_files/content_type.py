@@ -60,7 +60,9 @@ def serve_content_type(name: str, stored: str | None) -> str:
         mime = "text/plain"
         rest = ""
     if _needs_utf8(mime) and "charset=" not in rest.lower():
-        return f"{mime}; charset=utf-8" if not rest else f"{mime}; {rest}; charset=utf-8"
+        if not rest:
+            return f"{mime}; charset=utf-8"
+        return f"{mime}; {rest}; charset=utf-8"
     if rest:
         return f"{mime}; {rest}"
     return mime

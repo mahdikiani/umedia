@@ -109,7 +109,6 @@ def _headers(headers: Mapping[str, str]) -> dict[str, str]:
     return normalized
 
 
-
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -402,7 +401,8 @@ def generate_presigned_url(
         credential_scope=credential_scope,
         canonical_request=canonical,
     )
-    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{_canonical_query(query, omit_signature=False)}"
+    canonical_query = _canonical_query(query, omit_signature=False)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{canonical_query}"
 
 
 def _request_signing_url(request: Request) -> str:

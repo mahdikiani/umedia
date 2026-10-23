@@ -114,12 +114,12 @@ def list_multipart_uploads_xml(bucket: str) -> bytes:
 def ownership_controls_xml() -> bytes:
     """Cyberduck probes GetBucketOwnershipControls before PutObject."""
     return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<OwnershipControls "
-        'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
-        "<Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule>"
-        "</OwnershipControls>"
-    ).encode()
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b"<OwnershipControls "
+        b'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        b"<Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule>"
+        b"</OwnershipControls>"
+    )
 
 
 def _xml_local_name(tag: str) -> str:
@@ -130,7 +130,9 @@ def parse_delete_objects_body(body: bytes) -> tuple[list[str], bool]:
     """`Delete` XML → (keys, quiet). Invalid XML raises ValueError."""
     if not body.strip():
         raise ValueError("Delete body is empty")
-    from xml.etree import ElementTree
+    # Stdlib parser on purpose: expat >= 2.4.1 caps entity expansion, and DTDs
+    # are not resolved. Body size is bounded by the request limit upstream.
+    from xml.etree import ElementTree  # noqa: S405
 
     try:
         root = ElementTree.fromstring(body)  # noqa: S314 -- S3 client XML, not untrusted files
@@ -147,9 +149,11 @@ def parse_delete_objects_body(body: bytes) -> tuple[list[str], bool]:
             continue
         if name != "Object":
             continue
-        for field in child:
-            if _xml_local_name(field.tag) == "Key" and field.text:
-                keys.append(field.text)
+        keys.extend(
+            field.text
+            for field in child
+            if _xml_local_name(field.tag) == "Key" and field.text
+        )
     return keys, quiet
 
 

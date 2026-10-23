@@ -146,13 +146,13 @@ def encode_header_json(payload: dict[str, Any] | str) -> str:
 def decode_header_json(value: str) -> dict[str, Any]:
     """Accept the base64 form, and still parse legacy raw JSON."""
     stripped = value.strip()
-    if stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("{", "[")):
         loaded = json.loads(stripped)
-        if not isinstance(loaded, dict):
-            raise ValueError("plugin header JSON must be an object")
-        return loaded
-    padding = "=" * (-len(stripped) % 4)
-    loaded = json.loads(base64.urlsafe_b64decode(stripped + padding))
+    else:
+        padding = "=" * (-len(stripped) % 4)
+        loaded = json.loads(base64.urlsafe_b64decode(stripped + padding))
     if not isinstance(loaded, dict):
-        raise ValueError("plugin header JSON must be an object")
+        # ValueError (not TypeError): json.JSONDecodeError is one too, so
+        # callers handle every malformed-header case with one except.
+        raise ValueError("plugin header JSON must be an object")  # noqa: TRY004
     return loaded
