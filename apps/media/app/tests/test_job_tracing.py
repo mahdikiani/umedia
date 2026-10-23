@@ -25,12 +25,12 @@ from sentry_sdk.transport import Transport
 from apps.media_files import worker
 from apps.media_files.factory import run_inbound_sync
 from apps.media_files.jobs import JobRunRepository, job_run
+from apps.provider_connections import routes as connection_routes
 from plugins.client import PluginClient, PluginRPCError
 from plugins.contracts import Resource as PluginResource
 from plugins.contracts import ResourceUnavailableError, encode_header_json
 from plugins.process_manager import PluginProcessManager, log_plugin_line
 from plugins.sdk import JsonLineFormatter, PluginBackend, create_plugin_app
-from apps.provider_connections import routes as connection_routes
 from plugins.tracing import current_run_id
 from tests.media_file_helpers import FakeConnection, Harness, build_harness
 
