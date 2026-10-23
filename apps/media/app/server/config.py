@@ -2,18 +2,48 @@
 
 import dataclasses
 import os
+import tomllib
 from pathlib import Path
 from typing import ClassVar
 
 from fastapi_mongo_base.core import config
+
+_APP_DIR = Path(__file__).resolve().parent.parent
+
+
+def _project_version() -> str:
+    try:
+        with (_APP_DIR / "pyproject.toml").open("rb") as file:
+            return str(tomllib.load(file)["project"]["version"])
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "0.0.0"
+
+
+def sentry_release() -> str:
+    """The release every Sentry/GlitchTip event is tagged with.
+
+    `SENTRY_RELEASE` wins when set. Otherwise `umedia-media@<version>`
+    from pyproject.toml, plus `+<git sha>` when the image was built with
+    `--build-arg UMEDIA_GIT_SHA=$(git rev-parse HEAD)`, so an event names
+    the exact code that raised it. The sha is cut to 12 characters, the
+    same for every build path, so one commit always gets one release name.
+    """
+    explicit = os.getenv("SENTRY_RELEASE", "").strip()
+    if explicit:
+        return explicit
+    release = f"umedia-media@{_project_version()}"
+    sha = os.getenv("UMEDIA_GIT_SHA", "").strip()[:12]
+    return f"{release}+{sha}" if sha else release
 
 
 @dataclasses.dataclass
 class Settings(config.Settings):
     """Server config settings."""
 
-    base_dir: str = Path(__file__).resolve().parent.parent
+    base_dir: str = _APP_DIR
     base_path: str = "/api/v1"
+    # Read by fastapi_mongo_base's setup_sentry() in create_app.
+    sentry_release: str | None = dataclasses.field(default_factory=sentry_release)
 
     update_time: int = 60 * 60 * 24
     specific_dir: str = os.getenv("SPECIFIC_DIR", "")

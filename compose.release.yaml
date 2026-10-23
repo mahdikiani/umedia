@@ -4,6 +4,8 @@ services:
   media:
     image: ghcr.io/mahdikiani/umedia-media:${UMEDIA_VERSION:-0.1.0}
     restart: unless-stopped
+    # Graceful shutdown needs more than Docker's default 10s (see main.py).
+    stop_grace_period: 45s
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
       UMEDIA_DATA_DIR: /data

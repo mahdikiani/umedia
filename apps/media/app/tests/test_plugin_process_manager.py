@@ -4,6 +4,7 @@ Written before plugins/process_manager.py exists, per
 docs/08-implementation-plan.md's TDD process.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -202,4 +203,30 @@ async def test_stop_all_stops_every_plugin(manager: PluginProcessManager) -> Non
 
     await manager.stop_all()
 
+    assert manager.running_plugin_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_stop_all_stops_the_plugins_at_the_same_time(
+    manager: PluginProcessManager, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One after another, four slow plugins would outlast the container's
+    stop_grace_period (each gets GRACEFUL_STOP_TIMEOUT_SECONDS)."""
+    await manager.start("one", _command())
+    await manager.start("two", _command())
+    stopping: set[str] = set()
+    overlapped = False
+    stop = manager.stop
+
+    async def slow_stop(plugin_id: str) -> None:
+        nonlocal overlapped
+        stopping.add(plugin_id)
+        await asyncio.sleep(0.05)
+        overlapped = overlapped or len(stopping) == 2
+        await stop(plugin_id)
+
+    monkeypatch.setattr(manager, "stop", slow_stop)
+    await manager.stop_all()
+
+    assert overlapped
     assert manager.running_plugin_ids() == []

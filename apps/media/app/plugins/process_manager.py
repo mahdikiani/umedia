@@ -308,6 +308,15 @@ class PluginProcessManager:
         entry.socket_path.unlink(missing_ok=True)
 
     async def stop_all(self) -> None:
-        """Stop every running plugin -- called from the app's shutdown."""
-        for plugin_id in list(self._plugins):
-            await self.stop(plugin_id)
+        """Stop every running plugin -- called from the app's shutdown.
+
+        All at once: one at a time, four slow plugins would take up to
+        4 x GRACEFUL_STOP_TIMEOUT_SECONDS and outlast the container's
+        stop_grace_period. Every plugin is stopped even if one fails."""
+        results = await asyncio.gather(
+            *(self.stop(plugin_id) for plugin_id in list(self._plugins)),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result

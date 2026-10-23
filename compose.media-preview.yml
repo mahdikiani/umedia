@@ -19,7 +19,17 @@ services:
   media:
     build:
       context: ./apps/media/app
+      args:
+        # Release tag for GlitchTip events. Without it every build reports
+        # the bare pyproject version:
+        # UMEDIA_GIT_SHA=$(git rev-parse HEAD) docker compose ... build media
+        UMEDIA_GIT_SHA: ${UMEDIA_GIT_SHA:-}
     restart: unless-stopped
+    # Docker's default 10s ends in SIGKILL mid-shutdown; the app needs up to
+    # 15s for open requests, then up to 10s for background jobs and 5s for
+    # the plugin processes, which stop together (main.py
+    # GRACEFUL_SHUTDOWN_SECONDS, server/server.py lifespan).
+    stop_grace_period: 45s
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
       DOMAIN: umedia.uln.me

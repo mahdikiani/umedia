@@ -11,6 +11,7 @@ from pathlib import Path
 import fastapi_mongo_base.sql.models as sql_models
 import fastapi_mongo_base.sql.session as sql_session
 import pytz
+import sentry_sdk
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -198,6 +199,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await auth_service.dispose()
         await engine.dispose()
         logging.info("Shutdown complete")
+        # Send events captured during shutdown now: when the process is not
+        # PID 1, uvicorn re-raises SIGTERM after this and the process dies
+        # by the signal, so Sentry's atexit flush never runs.
+        sentry_sdk.flush(timeout=2.0)
 
 
 app = app_factory.create_app(
