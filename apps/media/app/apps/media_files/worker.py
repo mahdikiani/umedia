@@ -29,7 +29,8 @@ from apps.provider_connections.repository import ProviderConnectionRepository
 
 from .factory import build_media_file_service_from_state, run_inbound_sync
 from .repository import MediaFileRepository
-from .services import TRASH_RETENTION_DAYS, MediaFileService
+from .services import MediaFileService
+from .shared import TRASH_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 

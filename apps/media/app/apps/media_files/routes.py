@@ -60,7 +60,8 @@ from .factory import (
     run_inbound_sync,
 )
 from .schemas import MediaFileRecord
-from .services import UNSET, MediaFileService
+from .services import MediaFileService
+from .shared import UNSET
 from .transfer_service import TransferCreate
 
 router = APIRouter(prefix="/files", tags=["Files"])
