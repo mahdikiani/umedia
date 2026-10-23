@@ -39,13 +39,15 @@ from urllib.parse import urlparse
 from apps.s3.auth import generate_presigned_url
 from apps.s3.paths import file_keys
 from apps.storage_objects.schemas import StorageObjectRecord
-from plugins.client import PluginRPCError
+from plugins.client import PluginRPCError, is_permanent_read_failure
 from plugins.contracts import CreateResourceIn, ResourceNotFoundError, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
+from plugins.streams import close_stream, prime_stream
 from utils.pagination import Page
 
 from .content_type import index_content_type
 from .errors import (
+    MediaFileContentUnavailableError,
     MediaFileDeleteFailedError,
     MediaFileNotFoundError,
     MediaFilePermissionError,
@@ -451,6 +453,14 @@ HASH_RETRY_MAX_SECONDS = 24 * 3600.0
 HASH_FAILURE_CACHE_LIMIT = 10_000
 _hash_failures: dict[str, tuple[int, float]] = {}  # uid -> (attempts, retry_not_before)
 
+# The backoff above only covers transient errors and forgets them on
+# restart (every restart re-sent all 32 UMEDIA-2 events). When the provider
+# answers "not there" / "refused" (404/422), the file will not read on the
+# next pass either (`plugins.client.is_permanent_read_failure`): record
+# that on its StorageObject. The backfill skips it until a sync sees the
+# file change, or for HASH_ERROR_RETRY_AFTER.
+HASH_ERROR_RETRY_AFTER = timedelta(days=30)
+
 
 def _hash_in_backoff(uid: str, now: float) -> bool:
     entry = _hash_failures.get(uid)
@@ -845,15 +855,34 @@ class MediaFileService(MediaFileSearchMixin):
         *,
         range_header: str | None,
     ) -> tuple[MediaFileRecord, AsyncIterator[bytes]]:
-        """MediaFile -> primary StorageObject -> plugin stream."""
+        """MediaFile -> primary StorageObject -> plugin stream.
+
+        The stream is started here, before any response goes out: a read
+        that fails before its first byte raises (404 when the provider says
+        the bytes are not there, 502 otherwise) instead of becoming a 200
+        with a cut-off body (GlitchTip UMEDIA-2).
+        """
         if record.content_reference is None or record.provider_connection_id is None:
             raise MediaFileNotFoundError(record.uid)
-        stream = self._plugins.read_content(
-            record.provider_connection_id,
-            record.content_reference,
-            range_header=range_header,
-        )
-        await self._files.touch_access(record.uid)
+        try:
+            stream = await prime_stream(
+                self._plugins.read_content(
+                    record.provider_connection_id,
+                    record.content_reference,
+                    range_header=range_header,
+                ),
+            )
+        except (PluginRPCError, ResourceNotFoundError) as error:
+            if is_permanent_read_failure(error):
+                raise MediaFileNotFoundError(record.uid) from error
+            raise MediaFileContentUnavailableError(
+                f"File '{record.uid}': {error}",
+            ) from error
+        try:
+            await self._files.touch_access(record.uid)
+        except BaseException:
+            await close_stream(stream)  # the read is already running
+            raise
         return record, stream
 
     # ------------------------------------------------------------------
@@ -1612,15 +1641,23 @@ class MediaFileService(MediaFileSearchMixin):
         *,
         batch_size: int = 100,
     ) -> int:
-        """Hash indexed files in bounded pages without delaying provider sync."""
+        """Hash indexed files in bounded pages without delaying provider sync.
+
+        A file the provider says is not there (404/422) is recorded as
+        unreadable on its StorageObject and skipped by later passes, even
+        after a restart; other failures back off in memory.
+        """
         completed = 0
         failed = 0
         skipped = 0
+        unreadable = 0
         after_uid: str | None = None
+        retry_unreadable_before = datetime.now() - HASH_ERROR_RETRY_AFTER
         while pending := await self._objects.list_missing_hashes(
             provider_connection_id=provider_connection_id,
             after_uid=after_uid,
             limit=batch_size,
+            hash_error_before=retry_unreadable_before,
         ):
             after_uid = pending[-1].uid
             for item in pending:
@@ -1635,7 +1672,26 @@ class MediaFileService(MediaFileSearchMixin):
                             range_header=None,
                         ),
                     )
-                except Exception:
+                except Exception as error:
+                    if is_permanent_read_failure(error):
+                        unreadable += 1
+                        _hash_failures.pop(item.uid, None)
+                        await self._objects.set_hash_error_if_unchanged(
+                            uid=item.uid,
+                            expected_size=item.size,
+                            expected_metadata=item.metadata,
+                            error=str(error),
+                        )
+                        # A data condition at the provider, not a bug: a
+                        # warning (no error event), recorded once per file.
+                        logging.warning(
+                            "Content of %s on connection %s cannot be read, "
+                            "recorded as unreadable: %s",
+                            item.content_reference,
+                            provider_connection_id,
+                            error,
+                        )
+                        continue
                     failed += 1
                     attempts = _note_hash_failure(item.uid, time.monotonic())
                     if attempts == 1:  # one error event per file; later attempts stay quiet
@@ -1653,12 +1709,14 @@ class MediaFileService(MediaFileSearchMixin):
                     content_hash=content_hash,
                 )
                 completed += int(stored)
-        if failed or skipped:
+        if failed or skipped or unreadable:
             logging.warning(
-                "Content hash pass for connection %s: %d failed, %d in backoff",
+                "Content hash pass for connection %s: %d failed, %d in backoff, "
+                "%d newly unreadable",
                 provider_connection_id,
                 failed,
                 skipped,
+                unreadable,
             )
         return completed
 
@@ -1923,7 +1981,7 @@ class MediaFileService(MediaFileSearchMixin):
             previous,
             remote_newer=remote_newer,
         )
-        obj = await self._objects.upsert({
+        fields: dict[str, Any] = {
             "provider_connection_id": provider_connection_id,
             "content_reference": resource.id,
             "provider_parent_ref": resource.parent_id,
@@ -1938,7 +1996,11 @@ class MediaFileService(MediaFileSearchMixin):
             "size": remote_size,
             "metadata": remote_meta,
             "status": "active",
-        })
+        }
+        # A new size or mtime clears a recorded hash_error (the upsert
+        # decides that on the row): changed at the provider, worth reading
+        # again.
+        obj = await self._objects.upsert(fields)
         existing = await self._files.get_by_storage_object(obj.uid)
         if existing is None:
             media_file = await self._files.create({

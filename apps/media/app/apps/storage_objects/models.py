@@ -51,3 +51,9 @@ class StorageObject(BaseEntity):
     list_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     list_error_status: Mapped[int | None] = mapped_column(nullable=True)
     list_error_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Files only: the provider answered "not there / refused" (404/422)
+    # when the hash backfill read the content. Survives restarts, unlike
+    # the in-process backoff for transient errors; the backfill skips the
+    # file until a sync sees it change or the error ages out.
+    hash_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hash_error_at: Mapped[datetime | None] = mapped_column(nullable=True)

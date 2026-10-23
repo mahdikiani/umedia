@@ -110,6 +110,13 @@ class ResourceUnavailableError(PluginBackendError):
     http_status = 422
 
 
+class TemporaryProviderError(PluginBackendError):
+    """The provider failed in a way it says is temporary (rclone exit code
+    5): retry later, do not record the resource as unreadable."""
+
+    http_status = 503
+
+
 class UpstreamTimeoutError(PluginBackendError):
     """The provider did not answer within the plugin's own deadline. Worth
     retrying later; says nothing about the connection's credentials."""

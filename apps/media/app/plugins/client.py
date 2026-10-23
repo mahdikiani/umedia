@@ -24,6 +24,7 @@ import httpx
 from .contracts import (
     CreateResourceIn,
     Resource,
+    ResourceNotFoundError,
     StatusOut,
     UpdateResourceIn,
     encode_header_json,
@@ -132,6 +133,24 @@ class PluginRPCError(RuntimeError):
         self.target: str | None = None
         self.elapsed_seconds: float | None = None
         self.attempts: int | None = None
+
+
+#: Content-read answers that mean the bytes are not there, or refused for
+#: good (OneDrive's Personal Vault answers 422): asking again soon will not
+#: help. Both download layers answer 404 for them, and the hash backfill
+#: records them instead of retrying.
+PERMANENT_READ_STATUSES = frozenset({404, 422})
+
+
+def is_permanent_read_failure(error: BaseException) -> bool:
+    """Whether a failed content read is the file's problem for good (a
+    404 to the client) rather than the provider's right now (a 502)."""
+    if isinstance(error, ResourceNotFoundError):
+        return True
+    return (
+        isinstance(error, PluginRPCError)
+        and error.status_code in PERMANENT_READ_STATUSES
+    )
 
 
 def _note_failure(
@@ -363,16 +382,26 @@ class PluginClient:
         *,
         range_header: str | None = None,
     ) -> AsyncIterator[bytes]:
-        """`GET /resources/{id}/content`, streamed. Retried (idempotent).
+        """`GET /resources/{id}/content`, streamed.
 
         Uses `CONTENT_STREAM_TIMEOUT` so large S3/object reads are not killed
-        by the JSON-RPC default (10s). Connect still fails fast.
+        by the JSON-RPC default (10s). Connect still fails fast, and only a
+        failure to reach the plugin is retried -- never once a byte has been
+        yielded: starting over from byte 0 would hand the consumer the head
+        of the file twice (and hash garbage). A body the plugin cuts off
+        raises `PluginRPCError` instead of ending like a complete file.
+
+        Error messages name no file: GlitchTip groups issues by title, and
+        callers log the reference themselves.
         """
         headers = _config_headers(config)
         if range_header:
             headers["Range"] = range_header
+        started = time.monotonic()
+        target = "GET /resources/{id}/content"
         last_error: Exception | None = None
         for attempt in range(READ_RETRY_ATTEMPTS):
+            yielded = False
             try:
                 async with (
                     self._http_client() as client,
@@ -384,21 +413,34 @@ class PluginClient:
                     ) as response,
                 ):
                     if response.status_code >= 400:
-                        raise PluginRPCError(
-                            f"Plugin content read returned {response.status_code}",
+                        await response.aread()
+                        code, data = _error_body(response)
+                        rpc_error = PluginRPCError(
+                            f"Plugin content read returned {response.status_code}"
+                            + (f" ({code})" if code else ""),
                             status_code=response.status_code,
+                            code=code,
+                            data=data,
                         )
+                        _note_failure(rpc_error, target, started, attempt + 1)
+                        raise rpc_error
                     async for chunk in response.aiter_bytes():
+                        yielded = True
                         yield chunk
                     return
-            except (httpx.TimeoutException, httpx.ConnectError) as error:
+            except httpx.HTTPError as error:
                 last_error = error
-                if attempt + 1 < READ_RETRY_ATTEMPTS:
+                retryable = isinstance(error, RETRYABLE_TRANSPORT_ERRORS)
+                if retryable and not yielded and attempt + 1 < READ_RETRY_ATTEMPTS:
                     await asyncio.sleep(READ_RETRY_BACKOFF_SECONDS * (2**attempt))
                     continue
-                raise PluginRPCError(
-                    f"Plugin content read failed: {type(error).__name__}: {error}",
-                ) from error
+                what = "was cut off" if yielded else "failed"
+                rpc_error = PluginRPCError(
+                    f"Plugin content read {what}: {type(error).__name__}: {error}",
+                    transport_error=type(error).__name__,
+                )
+                _note_failure(rpc_error, target, started, attempt + 1)
+                raise rpc_error from error
         raise PluginRPCError("Plugin content read failed") from last_error
 
     async def create_resource(

@@ -105,6 +105,30 @@ async def test_upload_list_get_head_content(
 
 
 @pytest.mark.asyncio
+async def test_content_whose_bytes_are_gone_is_a_404_before_any_body(
+    client: httpx.AsyncClient, connection_id: str,
+) -> None:
+    """The provider read fails before its first byte: the route answers
+    404 JSON, not a 200 whose body is cut off (GlitchTip UMEDIA-2)."""
+    await _authenticated(client)
+    name = "gone-before-download.txt"
+    created = await client.post(
+        "/files",
+        data={"provider_connection_id": connection_id, "name": name},
+        files={"file": (name, b"soon gone", "text/plain")},
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+    (stored,) = _library_dir("files-routes-library").rglob(name)
+    stored.unlink()
+
+    for headers in ({}, {"Range": "bytes=0-3"}):
+        content = await client.get(f"/files/{uid}/content", headers=headers)
+        assert content.status_code == 404, content.text
+        assert content.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.asyncio
 async def test_markdown_content_is_utf8_plain_text_not_html(
     client: httpx.AsyncClient, connection_id: str,
 ) -> None:

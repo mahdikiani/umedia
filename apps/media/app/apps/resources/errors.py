@@ -53,6 +53,19 @@ class ResourceStateError(BaseHTTPException):
         )
 
 
+class ResourceContentUnavailableError(BaseHTTPException):
+    """The provider would not hand over the bytes; raised before any byte
+    is sent (502 instead of a 200 with a cut-off body)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            status_code=502,
+            error_code="resource_content_unavailable",
+            detail=detail,
+            message="Could not read the file from its storage provider",
+        )
+
+
 class ResourceWriteFailedError(BaseHTTPException):
     """Raised when the provider plugin rejects or fails a write.
 

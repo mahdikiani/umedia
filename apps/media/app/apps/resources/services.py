@@ -13,10 +13,14 @@ import hashlib
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from plugins.client import PluginRPCError, is_permanent_read_failure
 from plugins.contracts import CreateResourceIn, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
+from plugins.contracts import ResourceNotFoundError as PluginResourceNotFoundError
+from plugins.streams import close_stream, prime_stream
 
 from .errors import (
+    ResourceContentUnavailableError,
     ResourceNotFoundError,
     ResourcePermissionError,
     ResourceStateError,
@@ -224,12 +228,27 @@ class ResourceService:
     ) -> tuple[ResourceRecord, AsyncIterator[bytes]]:
         if resource.content_reference is None:
             raise ResourceNotFoundError(resource.uid)
-        stream = self._plugins.read_content(
-            resource.provider_connection_id,
-            resource.content_reference,
-            range_header=range_header,
-        )
-        await self._repository.touch_access(resource.uid)
+        # Started before any response goes out, so a read that fails before
+        # its first byte is a 404/502, not a 200 with a cut-off body.
+        try:
+            stream = await prime_stream(
+                self._plugins.read_content(
+                    resource.provider_connection_id,
+                    resource.content_reference,
+                    range_header=range_header,
+                ),
+            )
+        except (PluginRPCError, PluginResourceNotFoundError) as error:
+            if is_permanent_read_failure(error):
+                raise ResourceNotFoundError(resource.uid) from error
+            raise ResourceContentUnavailableError(
+                f"Resource '{resource.uid}': {error}",
+            ) from error
+        try:
+            await self._repository.touch_access(resource.uid)
+        except BaseException:
+            await close_stream(stream)  # the read is already running
+            raise
         return resource, stream
 
     async def volume_stats(self) -> dict[str, int]:
