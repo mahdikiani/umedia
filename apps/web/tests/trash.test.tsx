@@ -60,6 +60,9 @@ describe("trash page", () => {
       if (url.endsWith("/files/file-1/restore") && init?.method === "POST") {
         return jsonResponse({ ...deletedFile, deleted_at: null });
       }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
+      }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -92,6 +95,9 @@ describe("trash page", () => {
         && init?.method === "DELETE"
       ) {
         return noContentResponse();
+      }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
       }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
@@ -132,6 +138,9 @@ describe("trash page", () => {
       if (url.endsWith("/files/file-2/restore") && init?.method === "POST") {
         return jsonResponse({ ...other, deleted_at: null });
       }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
+      }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -164,6 +173,9 @@ describe("trash page", () => {
       ) {
         return noContentResponse();
       }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
+      }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -193,6 +205,9 @@ describe("trash page", () => {
       const url = String(input);
       if (url.includes("/files?scope=trash") && !init?.method) {
         return jsonResponse(pageOf([deletedFile]));
+      }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
       }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });
@@ -237,6 +252,9 @@ describe("trash page", () => {
       }
       if (url.endsWith("/files/file-2/restore") && init?.method === "POST") {
         return jsonResponse({ ...other, deleted_at: null });
+      }
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([]);
       }
       throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
     });

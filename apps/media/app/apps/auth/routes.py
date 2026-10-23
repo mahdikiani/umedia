@@ -166,11 +166,11 @@ async def refresh_from_cookie(
             refresh_token=refresh_token,
             include_tokens_in_json=False,
         )
-        json_response = JSONResponse(content=body.model_dump(exclude_none=True))
-        _set_session_cookies(json_response, pair)
-        return json_response
     except USSOException as exc:
         return _usso_error_response(exc)
+    json_response = JSONResponse(content=body.model_dump(exclude_none=True))
+    _set_session_cookies(json_response, pair)
+    return json_response
 
 
 @router.post(
@@ -203,11 +203,11 @@ async def refresh_from_cookie_or_body(
             refresh_token=refresh_token,
             include_tokens_in_json=include_tokens,
         )
-        json_response = JSONResponse(content=body.model_dump(exclude_none=True))
-        _set_session_cookies(json_response, pair)
-        return json_response
     except USSOException as exc:
         return _usso_error_response(exc)
+    json_response = JSONResponse(content=body.model_dump(exclude_none=True))
+    _set_session_cookies(json_response, pair)
+    return json_response
 
 
 async def _state_user(service: AuthService, uid: str) -> AuthStateUser | None:

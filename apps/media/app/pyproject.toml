@@ -69,8 +69,9 @@ image = [
 [tool.ruff]
 line-length = 88         # Black's default line length
 target-version = "py313"
-fix = true
-unsafe-fixes = true
+# No auto-fix here: `ruff check` must never rewrite files (CI, pre-commit);
+# run `ruff check --fix` explicitly when you want fixes applied.
+fix = false
 preview = true
 
 [tool.ruff.lint]
@@ -101,8 +102,20 @@ select = [
     # "ERA", # remove commented code
     "RUF", # ruff-specific improvements
 ]
-per-file-ignores = { "tests/*" = ["G004", "S101", "S106", "E402"] }
 ignore = ["TRY003", "COM812"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use fake credentials, async fakes that must match awaited signatures,
+# and spawn real S3 CLIs (rclone/aws/mc) with fixed arguments.
+"tests/*" = [
+    "G004", "S101", "S105", "S106", "S404", "S603", "E402", "E501",
+    "RUF001", "RUF029", "RUF100", "ASYNC251", "ANN202",
+]
+# Exception class names are the S3 protocol's error codes (<Code>AccessDenied</Code>).
+"apps/s3/exceptions.py" = ["N818"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.ruff.format]
 quote-style = "double"

@@ -5,7 +5,7 @@
 # reusing that project name from this checkout would let `docker compose`
 # associate with -- and potentially disrupt -- those already-running
 # containers. This is a testing convenience, not the Phase 5 wiring
-# (docs/09-tasks.md); apps/api still exists and is untouched.
+# (docs/09-tasks.md); apps/api has since been deleted.
 #
 # Path-based routing on one domain: `/api/v1/*` (every apps/media route --
 # auth, provider-connections, resources, and the /f/{uid} public-link
@@ -24,6 +24,8 @@ services:
       DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
       DOMAIN: umedia.uln.me
       PROJECT_NAME: umedia-media-preview
+      # Maintainer's deployment relies on the old built-in default.
+      CORS_ORIGIN_REGEX: ${CORS_ORIGIN_REGEX:-https://.*\.uln\.me}
       UMEDIA_DATA_DIR: /data
       # Without this, the `local` plugin's allowed root defaults to
       # $UMEDIA_DATA_DIR/storage (i.e. /data/storage) -- but the
@@ -100,10 +102,10 @@ services:
       - traefik.http.routers.umedia-s3-root-secure.priority=20
       # Nested S3 virtual-host (`{bucket}.umedia.uln.me`). Wildcard is
       # DNS-only; cert is Let's Encrypt DNS-01 (`*.umedia.uln.me`).
-      - "traefik.http.routers.umedia-media-preview-vhost.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\\.uln\\.me$`)"
+      - "traefik.http.routers.umedia-media-preview-vhost.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\.uln\.me$`)"
       - traefik.http.routers.umedia-media-preview-vhost.entrypoints=web
       - traefik.http.routers.umedia-media-preview-vhost.priority=10
-      - "traefik.http.routers.umedia-media-preview-vhost-secure.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\\.uln\\.me$`)"
+      - "traefik.http.routers.umedia-media-preview-vhost-secure.rule=HostRegexp(`^[a-z0-9-]+\\.umedia\.uln\.me$`)"
       - traefik.http.routers.umedia-media-preview-vhost-secure.entrypoints=websecure
       - traefik.http.routers.umedia-media-preview-vhost-secure.tls=true
       - traefik.http.routers.umedia-media-preview-vhost-secure.tls.certresolver=letsencrypt-dns

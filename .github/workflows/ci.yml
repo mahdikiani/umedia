@@ -56,6 +56,9 @@ jobs:
       - name: Install Python deps
         run: uv sync --group dev
 
+      - name: Ruff
+        run: uv run ruff check .
+
       - name: Pytest (including boto3 / rclone / aws / mc)
         run: uv run pytest -q
 

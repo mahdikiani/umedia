@@ -611,6 +611,7 @@ class RcloneBackend(PluginBackend):
         *,
         range_header: str | None,
     ) -> AsyncIterator[bytes]:
+        """Raise `ResourceNotFoundError` if it doesn't exist."""
         fs = _build_fs(config)
         args = ["cat"]
         if range_header:
@@ -627,16 +628,16 @@ class RcloneBackend(PluginBackend):
             stderr=asyncio.subprocess.PIPE,
         )
         assert process.stdout is not None  # noqa: S101 -- PIPE was requested above
-        found_output = False
-        while True:
-            chunk = await process.stdout.read(READ_CHUNK_SIZE)
-            if not chunk:
-                break
-            found_output = True
-            yield chunk
-        returncode = await process.wait()
-        if returncode != 0 and not found_output:
+        try:
+            while True:
+                chunk = await process.stdout.read(READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            returncode = await process.wait()
             stderr = (await process.stderr.read()) if process.stderr else b""
+        if returncode != 0:
             detail = stderr.decode(errors="replace")
             raise ResourceNotFoundError(f"{resource_id}: {detail}")
 

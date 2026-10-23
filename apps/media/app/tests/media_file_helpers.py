@@ -180,21 +180,9 @@ class FakeMediaPluginGateway:
         self.calls.append(("read", provider_connection_id, content_reference))
         if content_reference in self.fail_read:
             raise RuntimeError("simulated truncated plugin download")
-        if content_reference in self.store:
-            yield self.store[content_reference]
+        if content_reference not in self.store:
             return
-        resources = self.listings.get(provider_connection_id, {}).values()
-        resource = next(
-            (
-                item
-                for listing in resources
-                for item in listing
-                if item.id == content_reference
-            ),
-            None,
-        )
-        # Listing-only imports get stable bytes matching the advertised size.
-        yield b"x" * resource.size if resource is not None and resource.size else b""
+        yield self.store[content_reference]
 
     def plugin_calls(self, kind: str | None = None) -> list[tuple]:
         if kind is None:

@@ -16,3 +16,8 @@ node_modules/
 .next/
 site/
 *.sqlite3
+
+# Local tooling output
+graphify-out/
+.worktree-rfs-probe/
+.coverage

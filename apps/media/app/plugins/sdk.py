@@ -230,7 +230,23 @@ def create_plugin_app(backend: PluginBackend) -> FastAPI:  # noqa: C901
             decode_resource_id(resource_id),
             range_header=range_header,
         )
-        return StreamingResponse(stream)
+        try:
+            first_chunk = await anext(stream)
+        except StopAsyncIteration:
+            return StreamingResponse(())
+        except BaseException:
+            await stream.aclose()
+            raise
+
+        async def content_stream() -> AsyncIterator[bytes]:
+            try:
+                yield first_chunk
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await stream.aclose()
+
+        return StreamingResponse(content_stream())
 
     @app.post("/resources", response_model=Resource)
     async def create_resource(request: Request) -> Resource:

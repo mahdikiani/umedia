@@ -96,7 +96,7 @@ bound to a *different* checkout's live deployment at
 `~/Projects/ai/umedia`, currently serving `drive.uln.me`; reusing it here
 risked disrupting those already-running containers). This preview is its
 own compose project (`umedia-media-preview`), own volume, own Traefik
-router — `apps/api` is untouched and still exists.
+router.
 
 Two real build/deploy issues found and fixed getting this up:
 - `usso[lite]` wasn't on PyPI at first; a locally-built wheel was vendored
@@ -146,7 +146,7 @@ data across a restart).
 
 ## Phase 5 — Wiring & cleanup
 
-- [ ] P5.1: `apps/api` deleted entirely
+- [x] P5.1: `apps/api` deleted entirely
 - [ ] P5.2: `apps/web`'s `api()` helper points at `apps/media`'s new `/api/v1` base
 - [ ] P5.3: `docker-compose.yml` updated (drop `mongo-net`, single SQLite volume, one container) — also reconcile the root `compose.yaml`'s existing `umedia-files:/storage` volume mount with `server/config.py`'s `local_storage_root` default (`$UMEDIA_DATA_DIR/storage`, i.e. `/data/storage` unless `UMEDIA_LOCAL_STORAGE_ROOT` is set) so the `local` plugin's allowed root actually points at the mounted volume
 - [ ] P5.4: `server/worker.py` scheduler jobs updated for the new model names

@@ -30,7 +30,9 @@ def upgrade() -> None:
         sa.Column("meta_data", sa.JSON(), nullable=True),
         sa.PrimaryKeyConstraint("uid"),
     )
-    op.create_index("ix_instance_settings_uid", "instance_settings", ["uid"], unique=True)
+    op.create_index(
+        "ix_instance_settings_uid", "instance_settings", ["uid"], unique=True
+    )
 
 
 def downgrade() -> None:

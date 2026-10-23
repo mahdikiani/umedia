@@ -30,6 +30,16 @@ class Settings(config.Settings):
     master_key: str | None = dataclasses.field(
         default_factory=lambda: os.getenv("UMEDIA_MASTER_KEY"),
     )
+    # Where the generated master.key lives when UMEDIA_MASTER_KEY is unset.
+    # Unset keeps the legacy <data_dir>/secrets; set it to a separate volume so
+    # backups of the data volume do not also contain the key.
+    secrets_dir: Path | None = dataclasses.field(
+        default_factory=lambda: (
+            Path(os.environ["UMEDIA_SECRETS_DIR"])
+            if os.getenv("UMEDIA_SECRETS_DIR")
+            else None
+        ),
+    )
 
     # Provider plugin runtime (docs/03-provider-system.md)
     plugins_dir: Path = dataclasses.field(

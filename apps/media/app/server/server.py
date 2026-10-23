@@ -96,13 +96,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.settings = settings
-    # Pending OAuth CSRF states for the Google Drive paste flow
-    # (apps/provider_connections/oauth.py). In-memory is enough for a
-    # single container; multi-replica would need a shared store.
-    app.state.oauth_states = OAuthStateStore()
     app.state.credential_cipher = CredentialCipher.from_environment(
         data_dir=settings.data_dir,
         env_key=settings.master_key,
+        secrets_dir=settings.secrets_dir,
+    )
+    # OAuth CSRF states for the Drive paste flow are signed tokens derived
+    # from the installation key (apps/provider_connections/oauth.py), so
+    # they need no storage and verify on any replica.
+    app.state.oauth_states = OAuthStateStore(
+        secret=app.state.credential_cipher.key,
     )
     # `apps.resources.uploads`'s tus completion hook schedules detached
     # background tasks here; keeping the reference is required (asyncio
@@ -216,7 +219,9 @@ app = app_factory.create_app(
 )
 app.middleware("http")(jwt_guard)
 
-_cors_regex = os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.uln\.me").strip() or None
+# Off by default: with allow_credentials=True a wildcard-subdomain regex lets
+# every sibling host send credentialed requests. Opt in per deployment.
+_cors_regex = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
 _cors_origins = config.Settings().cors_origins or ["http://localhost:8000"]
 app.add_middleware(
     CORSMiddleware,

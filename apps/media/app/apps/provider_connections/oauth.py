@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import secrets
 import time
@@ -9,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi_mongo_base.core.exceptions import BaseHTTPException
 
 GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -94,42 +98,52 @@ class ParsedCallback:
     token: dict[str, Any] | None = None
 
 
-@dataclass
-class _PendingState:
-    provider_type: str
-    created_at: float
-
-
 class OAuthStateStore:
-    """In-memory CSRF state map with TTL (single-container only)."""
+    """Signed, self-expiring CSRF states for the OAuth paste flow.
 
-    def __init__(self, *, ttl_seconds: int = OAUTH_STATE_TTL_SECONDS) -> None:
+    A state is a Fernet token (authenticated, timestamped) carrying the
+    provider type and a nonce, so nothing has to be stored: it survives a
+    restart mid-flow and any replica can verify it. Single use is enforced
+    per process only; across replicas a state can be replayed until it
+    expires (`ttl_seconds`), which is acceptable for a CSRF binding that is
+    unguessable and short-lived.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = OAUTH_STATE_TTL_SECONDS,
+        secret: bytes | None = None,
+    ) -> None:
         self._ttl = ttl_seconds
-        self._pending: dict[str, _PendingState] = {}
+        if secret is None:
+            # No shared secret (tests): states only verify within this process.
+            secret = secrets.token_bytes(32)
+        derived = hmac.new(secret, b"umedia-oauth-state", hashlib.sha256).digest()
+        self._fernet = Fernet(base64.urlsafe_b64encode(derived))
+        self._used: dict[str, float] = {}
 
     def create(self, provider_type: str) -> str:
-        self._purge_expired()
-        state = secrets.token_urlsafe(32)
-        self._pending[state] = _PendingState(
-            provider_type=provider_type,
-            created_at=time.monotonic(),
-        )
-        return state
+        payload = json.dumps({"p": provider_type, "n": secrets.token_urlsafe(16)})
+        return self._fernet.encrypt(payload.encode()).decode()
 
     def consume(self, state: str, *, provider_type: str) -> bool:
-        self._purge_expired()
-        pending = self._pending.pop(state, None)
-        if pending is None:
+        self._purge_used()
+        if state in self._used:
             return False
-        return pending.provider_type == provider_type
+        try:
+            payload = json.loads(self._fernet.decrypt(state.encode(), ttl=self._ttl))
+        except (InvalidToken, ValueError):
+            return False
+        if payload.get("p") != provider_type:
+            return False
+        self._used[state] = time.monotonic()
+        return True
 
-    def _purge_expired(self) -> None:
+    def _purge_used(self) -> None:
         cutoff = time.monotonic() - self._ttl
-        expired = [
-            key for key, value in self._pending.items() if value.created_at < cutoff
-        ]
-        for key in expired:
-            del self._pending[key]
+        for key in [k for k, used_at in self._used.items() if used_at < cutoff]:
+            del self._used[key]
 
 
 def build_auth_url(

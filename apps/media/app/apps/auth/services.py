@@ -435,9 +435,11 @@ class AuthService:
                 raise UserNotFoundError
             if user.uid == actor_uid:
                 raise CannotDeleteSelfError
-            if "admin" in (user.roles or []):
-                if await self._count_admins(session) <= 1:
-                    raise LastAdminRequiredError
+            if (
+                "admin" in (user.roles or [])
+                and await self._count_admins(session) <= 1
+            ):
+                raise LastAdminRequiredError
             await self._auth.delete_user(user, session)
 
     async def _count_admins(self, session: AsyncSession) -> int:
