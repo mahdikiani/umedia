@@ -24,6 +24,7 @@ from apps.auth.middleware import jwt_guard
 from apps.auth.routes import router as auth_router
 from apps.auth.services import AuthService
 from apps.auth.user_routes import router as users_router
+from apps.auth.usso_mode import build_usso_authenticator
 from apps.media_files.notification_routes import router as notifications_router
 from apps.media_files.routes import provider_index_router
 from apps.media_files.routes import public_router as media_files_public_router
@@ -134,6 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     await auth_service.ensure_initialized()
     app.state.auth_service = auth_service
+    app.state.usso_auth = build_usso_authenticator(settings)
 
     plugin_registry = PluginRegistry(settings.plugins_dir)
     plugin_process_manager = PluginProcessManager(settings.plugin_socket_dir)
