@@ -2,7 +2,11 @@
 `app.state` -- mirrors `apps/resources/factory.py`'s pattern: nothing here
 is a singleton, repositories only hold a session factory."""
 
+import hashlib
+import logging
+import re
 from typing import Any, Protocol
+from uuid import uuid4
 
 from fastapi import Request
 
@@ -92,18 +96,121 @@ async def run_inbound_sync(
     state: _AppStateProtocol,
     connection_uid: str,
     actor_user_id: str,
-) -> dict[str, int]:
+    *,
+    trigger: str = "manual",
+    run_id: str | None = None,
+    confirm_missing: int | None = None,
+) -> dict[str, Any]:
     """One reconcile pass for one connection.
 
     Shared by `POST /providers/{uid}/sync` and the interval poller.
     Callers own `active_syncs` add/discard so GET sync status stays
     accurate for both triggers.
+
+    The outcome goes where the user sees it, for both triggers: the
+    connection's `last_error` (cleared by a clean pass) and, for a failed
+    or incomplete pass, an operation notification for the actor -- one per
+    manual run, one per distinct problem for the poller (which repeats the
+    same problem every cycle).
     """
+    run_id = run_id or uuid4().hex
     service = build_media_file_service_from_state(state)
-    return await service.import_from_provider(
+    options: dict[str, Any] = {"actor_user_id": actor_user_id}
+    if confirm_missing is not None:
+        options["confirm_missing"] = confirm_missing
+    try:
+        result = await service.import_from_provider(connection_uid, **options)
+    except Exception as error:
+        await _record_sync_outcome(
+            state,
+            connection_uid,
+            actor_user_id,
+            trigger=trigger,
+            run_id=run_id,
+            problem=_sync_failure_text(error),
+        )
+        raise
+    await _record_sync_outcome(
+        state,
         connection_uid,
-        actor_user_id=actor_user_id,
+        actor_user_id,
+        trigger=trigger,
+        run_id=run_id,
+        problem=_sync_incomplete_text(connection_uid, result),
     )
+    return result
+
+
+def _sync_failure_text(error: Exception) -> str:
+    return f"Sync failed: {type(error).__name__}: {error}"[:2000]
+
+
+def _sync_incomplete_text(connection_uid: str, result: dict[str, Any]) -> str | None:
+    """`last_error` text for a pass that finished but left something out,
+    or None for a clean pass."""
+    parts: list[str] = []
+    unlisted = result.get("failed_folders", 0) + result.get("skipped_folders", 0)
+    if unlisted:
+        names = [repr(item["folder"]) for item in result.get("failures", [])[:3]]
+        more = ", ..." if unlisted > len(names) else ""
+        parts.append(
+            f"{unlisted} folder(s) could not be listed ({', '.join(names)}{more}); "
+            "nothing under them was checked",
+        )
+    held = result.get("missing_held", 0)
+    if held:
+        parts.append(
+            f"{held} indexed object(s) are no longer at the provider and were "
+            "kept: too many to move to trash without confirmation (POST "
+            f"/providers/{connection_uid}/sync?confirm_missing={held})",
+        )
+    return f"Sync incomplete: {'; '.join(parts)}" if parts else None
+
+
+async def _record_sync_outcome(
+    state: _AppStateProtocol,
+    connection_uid: str,
+    actor_user_id: str,
+    *,
+    trigger: str,
+    run_id: str,
+    problem: str | None,
+) -> None:
+    """Best effort: a bookkeeping failure must not hide the sync's own
+    result or error."""
+    session_factory = getattr(state, "session_factory", None)
+    if session_factory is None:
+        return
+    try:
+        connections = ProviderConnectionRepository(session_factory)
+        connection = await connections.get(connection_uid)
+        if connection is not None and connection.last_error != problem:
+            await connections.update(connection_uid, {"last_error": problem})
+        if problem is None:
+            return
+        # The poller hits the same problem every cycle: notify once per
+        # distinct problem (counts ignored), not once per cycle.
+        source_uid = (
+            run_id
+            if trigger == "manual"
+            else "poll:{}:{}".format(
+                connection_uid,
+                hashlib.sha256(re.sub(r"\d+", "#", problem).encode()).hexdigest()[:16],
+            )
+        )
+        await build_notification_service_from_state(state).record_failure(
+            owner_id=actor_user_id,
+            operation="sync",
+            item_name=getattr(connection, "name", None) or connection_uid,
+            error=problem,
+            source_type="provider_sync",
+            source_uid=source_uid,
+        )
+    except Exception:
+        logging.exception(
+            "Could not record the sync outcome of connection '%s'",
+            connection_uid,
+        )
 
 
 def build_storage_object_service(request: Request) -> StorageObjectService:

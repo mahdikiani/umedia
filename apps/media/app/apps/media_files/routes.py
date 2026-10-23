@@ -54,7 +54,6 @@ from .content_type import serve_content_type
 from .errors import MediaFileNotFoundError, MediaFileValidationError
 from .factory import (
     build_media_file_service,
-    build_notification_service_from_state,
     build_storage_object_service,
     build_transfer_service,
     run_inbound_sync,
@@ -655,10 +654,18 @@ async def list_provider_objects(
     )
 
 
-def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> None:
+def _schedule_sync(
+    request: Request,
+    connection_uid: str,
+    actor_uid: str,
+    *,
+    confirm_missing: int | None = None,
+) -> None:
     """Detached sync job — same keep-alive pattern as connect-time import.
     The reconcile itself lives in `run_inbound_sync` so the interval
-    poller walks the same path.
+    poller walks the same path (it also records the outcome: the
+    connection's `last_error` and a notification for a failed or
+    incomplete run).
     """
     job_uid = uuid4().hex
 
@@ -668,6 +675,9 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
                 request.app.state,
                 connection_uid,
                 actor_uid,
+                trigger="manual",
+                run_id=job_uid,
+                confirm_missing=confirm_missing,
             )
             from .worker import schedule_content_hash_backfill
 
@@ -680,20 +690,7 @@ def _schedule_sync(request: Request, connection_uid: str, actor_uid: str) -> Non
                 connection_uid,
                 result,
             )
-        except Exception as error:
-            try:
-                await build_notification_service_from_state(
-                    request.app.state,
-                ).record_failure(
-                    owner_id=actor_uid,
-                    operation="sync",
-                    item_name=connection_uid,
-                    error=str(error),
-                    source_type="provider_sync",
-                    source_uid=job_uid,
-                )
-            except Exception:
-                logging.exception("Could not persist failed provider sync notification")
+        except Exception:
             logging.exception(
                 "Sync for provider connection '%s' failed", connection_uid
             )
@@ -730,9 +727,15 @@ async def get_sync_status(uid: str, request: Request) -> SyncStatusOut:
 async def sync_provider(
     uid: str,
     request: Request,
+    confirm_missing: Annotated[int | None, Query(ge=0)] = None,
 ) -> SyncAcceptedOut:
     """Accept a sync job immediately; the provider walk + reconcile runs
-    in the background so the UI never blocks on a large tree. Owner-only."""
+    in the background so the UI never blocks on a large tree. Owner-only.
+
+    `confirm_missing=N`: the owner accepts that up to N indexed objects
+    that are gone at the provider move to trash in this run. Without it a
+    run that would trash more than the safety limit only counts them (see
+    the connection's `last_error`)."""
     await _require_owned_connection(request, uid)
     if uid in request.app.state.active_syncs:
         raise HTTPException(
@@ -741,7 +744,12 @@ async def sync_provider(
         )
 
     request.app.state.active_syncs.add(uid)
-    _schedule_sync(request, uid, request.state.user.uid)
+    _schedule_sync(
+        request,
+        uid,
+        request.state.user.uid,
+        confirm_missing=confirm_missing,
+    )
     return SyncAcceptedOut(connection_id=uid)
 
 

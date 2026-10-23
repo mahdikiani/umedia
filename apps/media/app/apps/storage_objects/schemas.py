@@ -26,3 +26,7 @@ class StorageObjectRecord:
     created_at: datetime
     updated_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: Folders: the last listing failure, if the latest sync hit one.
+    list_error: str | None = None
+    list_error_status: int | None = None
+    list_error_at: datetime | None = None

@@ -9,8 +9,10 @@ remove trash roots soft-deleted more than
 provider connection and run the same reconcile as
 `POST /providers/{uid}/sync`. Sequential on purpose (SQLite; one plugin
 walk at a time). A failed provider is logged and skipped so one outage
-cannot abort the tick. Incomplete walks never mark objects missing --
-`import_from_provider` raises before that step.
+cannot abort the tick. A folder that cannot be listed is skipped by the
+walk itself (nothing under it is marked missing) and the pass still
+counts as finished, so the content-hash backfill runs; only a walk that
+stops on a connection-level failure skips the backfill.
 
 Purging is library-only (doc 11's v1 rule -- StorageObjects and the
 provider's bytes always survive), so the purge service is assembled from
@@ -156,11 +158,21 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
                     connection.uid,
                 )
                 continue
-            result = await run_inbound_sync(state, connection.uid, actor_id)
-            schedule_content_hash_backfill(state, connection.uid)
-            logger.info(
-                "Inbound poll sync for '%s' finished: %s",
+            result = await run_inbound_sync(
+                state,
                 connection.uid,
+                actor_id,
+                trigger="poll",
+            )
+            schedule_content_hash_backfill(state, connection.uid)
+            incomplete = any(
+                result.get(key)
+                for key in ("failed_folders", "skipped_folders", "missing_held")
+            )
+            (logger.warning if incomplete else logger.info)(
+                "Inbound poll sync for '%s' finished%s: %s",
+                connection.uid,
+                " incomplete" if incomplete else "",
                 result,
             )
             reconciled += 1

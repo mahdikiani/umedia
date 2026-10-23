@@ -175,6 +175,9 @@ class StorageObjectOut(BaseModel):
     last_seen_at: datetime
     created_at: datetime
     updated_at: datetime
+    #: Folders: why the last sync could not list it (null when it could).
+    list_error: str | None = None
+    list_error_at: datetime | None = None
 
     @classmethod
     def from_record(cls, record: StorageObjectRecord) -> "StorageObjectOut":
@@ -193,6 +196,8 @@ class StorageObjectOut(BaseModel):
             last_seen_at=record.last_seen_at,
             created_at=record.created_at,
             updated_at=record.updated_at,
+            list_error=record.list_error,
+            list_error_at=record.list_error_at,
         )
 
 

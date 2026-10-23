@@ -10,7 +10,7 @@ provider-index browse and for mirroring.
 from datetime import datetime
 
 from fastapi_mongo_base.sql.models import BaseEntity
-from sqlalchemy import JSON, UniqueConstraint
+from sqlalchemy import JSON, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -44,3 +44,10 @@ class StorageObject(BaseEntity):
     status: Mapped[str] = mapped_column(default="active", index=True)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.now)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Folders only: why the last sync could not list this folder (cleared
+    # by the next successful listing). A 404/422 status means the provider
+    # will keep refusing (e.g. OneDrive's Personal Vault), so the walk
+    # skips the folder for a while instead of failing on it every pass.
+    list_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    list_error_status: Mapped[int | None] = mapped_column(nullable=True)
+    list_error_at: Mapped[datetime | None] = mapped_column(nullable=True)

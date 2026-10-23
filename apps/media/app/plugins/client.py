@@ -74,6 +74,7 @@ class PluginRPCError(RuntimeError):
         status_code: int | None = None,
         code: str | None = None,
         data: dict[str, Any] | None = None,
+        transport_error: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -81,6 +82,10 @@ class PluginRPCError(RuntimeError):
         # plugin SDK produced the error body (see sdk.py's handler).
         self.code = code
         self.data = data or {}
+        # The httpx exception class name when no response arrived at all
+        # (`ReadTimeout`, `ConnectError`, ...): a slow call and a dead
+        # plugin need different handling (see the sync walk).
+        self.transport_error = transport_error
 
 
 def _error_body(response: httpx.Response) -> tuple[str | None, dict[str, Any]]:
@@ -162,6 +167,7 @@ class PluginClient:
                         continue
                     raise PluginRPCError(
                         f"Plugin call {method} {path} failed: {type(error).__name__}: {error}",
+                        transport_error=type(error).__name__,
                     ) from error
                 if response.status_code >= 400:
                     code, data = _error_body(response)

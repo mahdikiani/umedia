@@ -101,6 +101,23 @@ class ResourceNotFoundError(PluginBackendError):
     http_status = 404
 
 
+class ResourceUnavailableError(PluginBackendError):
+    """The resource exists, but the provider refuses to serve it and asking
+    again will not help -- e.g. OneDrive's "Personal Vault" folder, which
+    Microsoft Graph never lists for third-party apps
+    (`invalidResourceId: ObjectHandle is Invalid`)."""
+
+    http_status = 422
+
+
+class ProviderAuthError(PluginBackendError):
+    """The provider rejected the connection's credentials (an expired or
+    revoked OAuth token). Every call on this connection fails the same way
+    until the user reconnects it."""
+
+    http_status = 401
+
+
 def encode_resource_id(resource_id: str) -> str:
     """URL-path-safe encoding for a resource id that may itself contain
     `/` -- path-addressed providers (`local`, and `rclone`'s remote

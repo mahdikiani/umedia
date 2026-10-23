@@ -30,8 +30,10 @@ from plugins.contracts import (
     HostKeyMismatchError,
     HostKeyUnknownError,
     PluginBackendError,
+    ProviderAuthError,
     Resource,
     ResourceNotFoundError,
+    ResourceUnavailableError,
     StatusOut,
     UpdateResourceIn,
 )
@@ -44,6 +46,34 @@ HOST_KEY_PROBE_TIMEOUT_SECONDS = 10.0
 RCD_STOP_TIMEOUT_SECONDS = 5.0
 RC_CALL_TIMEOUT_SECONDS = 30.0
 READ_CHUNK_SIZE = 64 * 1024
+
+
+# rc error texts that say more than "something failed" (rc answers 500 for
+# most provider errors). Matched as substrings of rclone's message.
+_AUTH_ERROR_MARKERS = (
+    "invalid_grant",  # Google/Microsoft: refresh token expired or revoked
+    "InvalidAuthenticationToken",  # Microsoft Graph 401
+    "expired_access_token",  # Dropbox
+    "invalid_access_token",  # Dropbox
+)
+_UNAVAILABLE_ERROR_MARKERS = (
+    # OneDrive "Personal Vault": Graph refuses to list it for third-party apps.
+    "invalidResourceId",
+    "ObjectHandle is Invalid",
+)
+
+
+def _rc_error(status_code: int, message: str) -> PluginBackendError:
+    """Map one failed rc call to the contract error the core can act on:
+    401 means the whole connection is unusable, 404/422 mean this one
+    resource will keep failing, anything else is a plain 502."""
+    if any(marker in message for marker in _AUTH_ERROR_MARKERS):
+        return ProviderAuthError(message)
+    if any(marker in message for marker in _UNAVAILABLE_ERROR_MARKERS):
+        return ResourceUnavailableError(message)
+    if status_code == 404:  # rc's own answer for fs.ErrorDirNotFound / ObjectNotFound
+        return ResourceNotFoundError(message)
+    return PluginBackendError(message)
 
 
 def _free_local_port() -> int:
@@ -478,7 +508,10 @@ class RcloneBackend(PluginBackend):
                 raise PluginBackendError(f"rclone rc call failed: {error}") from error
         data: dict[str, Any] = response.json() if response.content else {}
         if response.status_code >= 400:
-            raise PluginBackendError(data.get("error", f"rc {path} failed"))
+            raise _rc_error(
+                response.status_code,
+                str(data.get("error") or f"rc {path} failed"),
+            )
         return data
 
     async def _run_subprocess(

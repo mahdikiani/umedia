@@ -453,6 +453,7 @@ def _recording_run(
         _state: object,
         connection_uid: str,
         actor_user_id: str,
+        **_options: object,
     ) -> dict[str, int]:
         if isinstance(sink, list):
             sink.append(connection_uid)
@@ -582,7 +583,9 @@ async def test_poller_mutates_the_existing_empty_active_syncs_set(
     connection = await _persist_connection(harness)
     held: list[set[str]] = []
 
-    async def _fake_run(state: object, connection_uid: str, _actor: str) -> dict:
+    async def _fake_run(
+        state: object, connection_uid: str, _actor: str, **_options: object,
+    ) -> dict:
         snapshot = set(state.active_syncs)
         held.append(snapshot)
         if connection_uid not in snapshot:
