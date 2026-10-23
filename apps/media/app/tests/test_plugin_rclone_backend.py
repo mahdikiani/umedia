@@ -1,11 +1,14 @@
 """Unit tests for the rclone connection-string builders (no subprocess)."""
 
+import asyncio
 import shutil
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from plugins.contracts import ConnectionFailedError
+from plugins.contracts import ConnectionFailedError, ResourceNotFoundError
 from plugins.rclone.backend import (
+    RcloneBackend,
     _build_fs,
     _dropbox_fs,
     _ftp_fs,
@@ -17,6 +20,31 @@ from plugins.rclone.backend import (
     _sftp_fs,
     _webdav_fs,
 )
+
+
+async def test_read_content_raises_on_nonzero_exit_after_partial_output() -> None:
+    stdout = asyncio.StreamReader()
+    stdout.feed_data(b"partial")
+    stdout.feed_eof()
+    process = AsyncMock()
+    process.stdout = stdout
+    process.stderr = asyncio.StreamReader()
+    process.stderr.feed_data(b"provider read failed")
+    process.stderr.feed_eof()
+    process.wait.return_value = 1
+
+    backend = RcloneBackend()
+    with (
+        patch("plugins.rclone.backend._build_fs", return_value="remote:"),
+        patch(
+            "plugins.rclone.backend.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ),
+    ):
+        chunks = backend.read_content({}, "missing.txt", range_header=None)
+        assert await anext(chunks) == b"partial"
+        with pytest.raises(ResourceNotFoundError):
+            await anext(chunks)
 
 
 def test_quote_wraps_values_with_delimiter_characters() -> None:

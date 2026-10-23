@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
 
@@ -6,7 +7,78 @@ import pytest
 from fastapi import FastAPI
 
 from plugins.client import PluginClient
+from plugins.contracts import (
+    ResourceNotFoundError,
+    encode_header_json,
+    encode_resource_id,
+)
 from plugins.sdk import PluginBackend, TelegramLoginPluginBackend, create_plugin_app
+
+
+class MissingStreamBackend(PluginBackend):
+    async def startup(self) -> None: ...
+    async def shutdown(self) -> None: ...
+    async def connect(self, config: dict[str, object]) -> None: ...
+
+    async def list_resources(
+        self,
+        config: dict[str, object],
+        *,
+        parent_id: str | None,
+    ) -> list[object]: ...
+
+    async def get_resource(
+        self,
+        config: dict[str, object],
+        resource_id: str,
+    ) -> object: ...
+
+    async def create_resource(
+        self,
+        config: dict[str, object],
+        metadata: object,
+        *,
+        content: object,
+    ) -> object: ...
+
+    async def update_resource(
+        self,
+        config: dict[str, object],
+        resource_id: str,
+        changes: object,
+        *,
+        content: object | None,
+    ) -> object: ...
+
+    async def delete_resource(
+        self,
+        config: dict[str, object],
+        resource_id: str,
+    ) -> None: ...
+
+    async def read_content(
+        self,
+        config: dict[str, object],
+        resource_id: str,
+        *,
+        range_header: str | None,
+    ) -> AsyncIterator[bytes]:
+        raise ResourceNotFoundError(resource_id)
+        if False:
+            yield b""
+
+
+@pytest.mark.asyncio
+async def test_read_content_missing_raises_before_stream_response_starts() -> None:
+    app = create_plugin_app(MissingStreamBackend())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/resources/{encode_resource_id('missing')}/content",
+            headers={"X-Umedia-Connection-Config": encode_header_json({})},
+        )
+    assert response.status_code == 404
+    assert response.json()["code"] == "ResourceNotFoundError"
 
 
 class LoginBackend(TelegramLoginPluginBackend):

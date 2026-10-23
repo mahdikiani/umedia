@@ -81,6 +81,7 @@ async def test_hash_backfill_hashes_indexed_files_in_background(
 ) -> None:
     harness.plugins.listings[CONNECTION_ID] = _tree_listing()
     harness.plugins.store["a.txt"] = b"abc"
+    harness.plugins.store["docs/b.txt"] = b"x" * 7
 
     await harness.service.import_from_provider(
         CONNECTION_ID,
