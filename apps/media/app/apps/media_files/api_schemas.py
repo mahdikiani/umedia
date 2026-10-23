@@ -168,6 +168,7 @@ class StorageObjectOut(BaseModel):
     type: str
     name: str
     content_hash: str | None
+    hash_algorithm: str | None = None
     content_type: str
     size: int
     metadata: dict[str, Any]
@@ -186,6 +187,7 @@ class StorageObjectOut(BaseModel):
             type=record.type,
             name=record.name,
             content_hash=record.content_hash,
+            hash_algorithm=record.hash_algorithm,
             content_type=record.content_type,
             size=record.size,
             metadata=record.metadata,
@@ -232,6 +234,20 @@ class SyncStatusOut(BaseModel):
 
     status: Literal["idle", "running"]
     connection_id: str
+
+
+class HashProgressOut(BaseModel):
+    """`GET /providers/{uid}/hashes` -- fingerprinting progress of one
+    connection's files. `native` hashes came free with the provider listing,
+    `computed` ones were SHA-256 hashed by downloading, `pending` are still
+    queued for the background backfill."""
+
+    connection_id: str
+    total: int
+    native: int
+    computed: int
+    pending: int
+    running: bool
 
 
 class SyncResultOut(BaseModel):

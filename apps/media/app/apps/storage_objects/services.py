@@ -35,12 +35,21 @@ class StorageObjectRepositoryProtocol(Protocol):
         include_deleted: bool = False,
     ) -> int: ...
     async def get(self, uid: str) -> StorageObjectRecord | None: ...
+    async def hash_progress(
+        self, *, provider_connection_id: str,
+    ) -> dict[str, int]: ...
     async def upsert(self, data: dict[str, Any]) -> StorageObjectRecord: ...
 
 
 class StorageObjectService:
     def __init__(self, repository: StorageObjectRepositoryProtocol) -> None:
         self._repository = repository
+
+    async def hash_progress(self, provider_connection_id: str) -> dict[str, int]:
+        """How many of a connection's files are fingerprinted, and how."""
+        return await self._repository.hash_progress(
+            provider_connection_id=provider_connection_id,
+        )
 
     async def list_objects(
         self,

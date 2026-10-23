@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from apps.auth.middleware import resolve_optional_user
 
 from .api_schemas import (
+    HashProgressOut,
     LinkIn,
     MediaFileOut,
     MediaFileUpdateIn,
@@ -720,6 +721,27 @@ async def get_sync_status(uid: str, request: Request) -> SyncStatusOut:
     return SyncStatusOut(
         connection_id=uid,
         status="running" if running else "idle",
+    )
+
+
+@provider_index_router.get(
+    "/providers/{uid}/hashes",
+    response_model=HashProgressOut,
+)
+async def get_hash_progress(uid: str, request: Request) -> HashProgressOut:
+    """Fingerprinting progress for one connection: how many files got a hash
+    from the provider's own listing (`native`), how many UMedia hashed by
+    downloading (`computed`), and how many still wait (`pending`). `running`
+    is true while the background backfill task is alive. Counts come from
+    SQLite, so polling is cheap."""
+    await _require_owned_connection(request, uid)
+    counts = await build_storage_object_service(request).hash_progress(uid)
+    task = getattr(request.app.state, "hash_tasks", {}).get(uid)
+    return HashProgressOut(
+        connection_id=uid,
+        total=sum(counts.values()),
+        running=task is not None and not task.done(),
+        **counts,
     )
 
 

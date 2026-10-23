@@ -36,6 +36,9 @@ class StorageObject(BaseEntity):
     type: Mapped[str] = mapped_column(index=True)
     name: Mapped[str] = mapped_column(index=True)
     content_hash: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    # Which algorithm `content_hash` is: "sha256" when UMedia hashed the
+    # bytes, otherwise the provider's own (md5, sha1, dropbox, quickxor, xet).
+    hash_algorithm: Mapped[str | None] = mapped_column(nullable=True)
     content_type: Mapped[str] = mapped_column(default="application/octet-stream")
     size: Mapped[int] = mapped_column(default=0)
     # Python attribute can't be named `metadata` (reserved by SQLAlchemy's

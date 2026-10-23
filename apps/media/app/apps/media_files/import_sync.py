@@ -10,6 +10,7 @@ from .content_type import index_content_type
 from .errors import (
     MediaFileValidationError,
 )
+from .hashing import pick_native_hash
 from .provider_layout import (
     is_umedia_managed_reference,
 )
@@ -199,6 +200,21 @@ class ImportSyncMixin:
             previous,
             remote_newer=remote_newer,
         )
+        hash_algorithm = (
+            previous.hash_algorithm if content_hash and previous else None
+        )
+        native = None if is_folder else pick_native_hash(resource.hashes)
+        if native is not None and (
+            content_hash is None
+            or (hash_algorithm == native[0] and content_hash != native[1])
+        ):
+            # The provider already knows the file's hash: index it from the
+            # listing instead of leaving it for the download backfill. An
+            # unchanged file keeps the hash it has, unless the provider's
+            # own hash for the same algorithm says the bytes changed.
+            hash_algorithm, content_hash = native
+        elif content_hash and hash_algorithm is None:
+            hash_algorithm = "sha256"
         obj = await self._objects.upsert({
             "provider_connection_id": provider_connection_id,
             "content_reference": resource.id,
@@ -206,6 +222,7 @@ class ImportSyncMixin:
             "type": resource.type,
             "name": resource.name,
             "content_hash": content_hash,
+            "hash_algorithm": hash_algorithm,
             "content_type": (
                 DIRECTORY_CONTENT_TYPE
                 if is_folder

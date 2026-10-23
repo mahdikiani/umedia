@@ -155,6 +155,50 @@ describe("storage settings", () => {
     });
   });
 
+  it("shows fingerprinting progress while files are pending and hides it when done", async () => {
+    let progress = { total: 10, native: 4, computed: 2, pending: 4, running: true };
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth/state")) {
+        return jsonResponse({ configured: true, authenticated: true, user: admin });
+      }
+      if (url.endsWith("/provider-types")) return jsonResponse([]);
+      if (url.endsWith("/providers") && !init?.method) {
+        return jsonResponse([connection]);
+      }
+      if (url.endsWith("/settings/placement")) return jsonResponse(placement);
+      if (url.endsWith("/providers/provider-1/sync")) {
+        return jsonResponse({ status: "idle", connection_id: "provider-1" });
+      }
+      if (url.endsWith("/providers/provider-1/hashes")) {
+        return jsonResponse({ connection_id: "provider-1", ...progress });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderStorageSettings();
+
+    expect(await screen.findByText("Fingerprinting files")).toBeInTheDocument();
+    expect(screen.getByText("6 / 10")).toBeInTheDocument();
+    expect(
+      screen.getByText("4 from the provider, 2 computed here"),
+    ).toBeInTheDocument();
+
+    progress = { total: 10, native: 4, computed: 6, pending: 0, running: false };
+    cleanup();
+    renderStorageSettings();
+
+    await screen.findAllByText("Local files");
+    await waitFor(() => {
+      const hashCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/providers/provider-1/hashes"),
+      );
+      expect(hashCalls.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.queryByText("Fingerprinting files")).not.toBeInTheDocument();
+  });
+
   it("keeps connection options collapsed until requested", async () => {
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = String(input);

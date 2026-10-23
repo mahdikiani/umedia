@@ -567,3 +567,44 @@ async def test_anonymous_can_open_public_file_via_files_content(
         content = await anonymous.get(f"/files/{uid}/content/banner.png")
         assert content.status_code == 200
         assert content.content == b"banner-bytes"
+
+
+@pytest.mark.asyncio
+async def test_hash_progress_endpoint_reports_backfill_completion(
+    client: httpx.AsyncClient,
+) -> None:
+    """GET /providers/{uid}/hashes: the local plugin reports no provider
+    hashes, so every file starts pending and the background backfill moves
+    them to `computed`."""
+    await _authenticated(client)
+    library = _library_dir("hash-progress-library")
+    library.mkdir(parents=True, exist_ok=True)
+    (library / "one.txt").write_bytes(b"one")
+    (library / "two.txt").write_bytes(b"two")
+    created = await client.post(
+        "/providers",
+        json={
+            "provider_type": "local",
+            "name": "hash-progress",
+            "config": {"root_path": str(library)},
+        },
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["uid"]
+    assert (await client.post(f"/providers/{uid}/sync")).status_code == 202
+
+    progress = {}
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        response = await client.get(f"/providers/{uid}/hashes")
+        assert response.status_code == 200, response.text
+        progress = response.json()
+        if progress["total"] == 2 and progress["pending"] == 0:
+            break
+    assert progress["connection_id"] == uid
+    assert progress["total"] == 2
+    assert progress["pending"] == 0
+    assert progress["computed"] == 2
+    assert progress["native"] == 0
+
+    assert (await client.get("/providers/nope/hashes")).status_code == 404
