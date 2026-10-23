@@ -178,8 +178,14 @@ data. Concretely:
      vice versa).
 
 3. **Writes are not blindly retried.** Read operations (`list`/`get`/
-   content-read) may be retried with backoff on timeout — they're
-   idempotent by nature. `create`/`update`/`delete` are **not**
+   content-read) are idempotent by nature and are retried with backoff
+   when the request never reached the plugin (connect and pool failures).
+   A `list` or `get` that timed out waiting for its answer is not
+   retried: the plugin is still working on it, and a retry would only
+   start the same slow provider call again. Listing a folder has its own
+   deadlines (the rclone plugin gives up on the rc call after 300s and
+   answers 504; the core waits up to 330s), and `get` waits 40s for the
+   plugin's 30s rc call. `create`/`update`/`delete` are **not**
    auto-retried by the plugin client, to avoid duplicate side effects
    (e.g. two uploads because the first response was merely slow); a failed
    write surfaces as `status: failed` per point 2 and is a user- or

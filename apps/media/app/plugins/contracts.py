@@ -110,6 +110,13 @@ class ResourceUnavailableError(PluginBackendError):
     http_status = 422
 
 
+class UpstreamTimeoutError(PluginBackendError):
+    """The provider did not answer within the plugin's own deadline. Worth
+    retrying later; says nothing about the connection's credentials."""
+
+    http_status = 504
+
+
 class ProviderAuthError(PluginBackendError):
     """The provider rejected the connection's credentials (an expired or
     revoked OAuth token). Every call on this connection fails the same way

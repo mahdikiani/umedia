@@ -8,6 +8,7 @@ import pytest
 from plugins.contracts import (
     ProviderAuthError,
     ResourceUnavailableError,
+    UpstreamTimeoutError,
     encode_header_json,
 )
 from plugins.sdk import PluginBackend, create_plugin_app
@@ -45,6 +46,7 @@ class _ListFails(PluginBackend):
     [
         (ResourceUnavailableError("invalidResourceId"), 422),
         (ProviderAuthError("invalid_grant"), 401),
+        (UpstreamTimeoutError("rc /operations/list did not answer"), 504),
     ],
 )
 async def test_list_errors_reach_the_core_with_their_status(

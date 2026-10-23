@@ -15,10 +15,12 @@ disk here.
 import asyncio
 import base64
 import contextlib
+import json
 import logging
 import os
 import re
 import socket
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -36,6 +38,7 @@ from plugins.contracts import (
     ResourceUnavailableError,
     StatusOut,
     UpdateResourceIn,
+    UpstreamTimeoutError,
 )
 from plugins.sdk import PluginBackend
 
@@ -45,6 +48,14 @@ RCD_STARTUP_TIMEOUT_SECONDS = 15.0
 HOST_KEY_PROBE_TIMEOUT_SECONDS = 10.0
 RCD_STOP_TIMEOUT_SECONDS = 5.0
 RC_CALL_TIMEOUT_SECONDS = 30.0
+# Listing one folder can take far longer than a stat: a phone camera folder
+# on Google Drive is thousands of entries, paged by the API. The core's
+# list deadline (`plugins.client.LIST_READ_TIMEOUT_SECONDS`) is this plus a
+# margin, so the plugin gives up first and answers with a real error (504)
+# instead of the core hanging up mid-listing.
+RC_LIST_TIMEOUT_SECONDS = 300.0
+# rc calls slower than this are logged (with the folder) even when they work.
+RC_SLOW_CALL_SECONDS = 10.0
 READ_CHUNK_SIZE = 64 * 1024
 
 
@@ -63,17 +74,65 @@ _UNAVAILABLE_ERROR_MARKERS = (
 )
 
 
-def _rc_error(status_code: int, message: str) -> PluginBackendError:
+def _rc_error(
+    status_code: int,
+    message: str,
+    *,
+    raw: str | None = None,
+) -> PluginBackendError:
     """Map one failed rc call to the contract error the core can act on:
     401 means the whole connection is unusable, 404/422 mean this one
-    resource will keep failing, anything else is a plain 502."""
-    if any(marker in message for marker in _AUTH_ERROR_MARKERS):
+    resource will keep failing, anything else is a plain 502.
+
+    The markers are looked for in rclone's own text (`raw`, by default
+    `message`): redacting can swallow a marker that follows a credential.
+    The error carries `message`, the redacted text."""
+    text = message if raw is None else raw
+    if any(marker in text for marker in _AUTH_ERROR_MARKERS):
         return ProviderAuthError(message)
-    if any(marker in message for marker in _UNAVAILABLE_ERROR_MARKERS):
+    if any(marker in text for marker in _UNAVAILABLE_ERROR_MARKERS):
         return ResourceUnavailableError(message)
     if status_code == 404:  # rc's own answer for fs.ErrorDirNotFound / ObjectNotFound
         return ResourceNotFoundError(message)
     return PluginBackendError(message)
+
+
+REDACTED_REMOTE = "<remote>"
+# Connection-string parameters whose values are credentials. A fallback
+# for `redact_remotes`: rclone sometimes quotes a remote in a form other
+# than the one it was given. A value is either single-quoted (`''` escapes
+# a quote; the quotes themselves may come backslash-escaped) or runs to
+# the next `,`/`:` delimiter -- a `key_pem` value has spaces in it, so
+# whitespace does not end it.
+_SECRET_PARAM_RE = re.compile(
+    r"\b(token|access_token|refresh_token|client_secret|secret_access_key"
+    r"|access_key_id|session_token|pass|password|key_pem|key_file_pass"
+    r"|bearer_token|sse_customer_key)"
+    r"=(\\?'(?:''|[^'])*'|[^,:'\"]*)",
+)
+# A password inside a URL (a WebDAV `url=https://user:pw@host/`).
+_URL_USERINFO_RE = re.compile(r"(://[^\s/:@'\"]*):[^\s/@'\"]*@")
+
+
+def redact_remotes(text: str, *remotes: str | None) -> str:
+    """`text` with every inline connection string in it masked.
+
+    The `fs` of an rc call (and of `rclone cat`/`rcat`) is an inline
+    connection string that carries the connection's credentials
+    (`:drive,token='{...}':`), and rclone repeats it in its error messages
+    -- Go-quoted, so the escaped form is masked too. Pass the `fs`, not the
+    full `cat`/`rcat` target: rclone quotes a prefix of the target (the
+    remote's directory), which still starts with the `fs`. Use on anything
+    rclone says before it goes into a log line or an error the core passes
+    on.
+    """
+    for remote in remotes:
+        if not remote:
+            continue
+        for form in (remote, json.dumps(remote, ensure_ascii=False)[1:-1]):
+            text = text.replace(form, REDACTED_REMOTE)
+    text = _SECRET_PARAM_RE.sub(r"\1=<redacted>", text)
+    return _URL_USERINFO_RE.sub(r"\1:<redacted>@", text)
 
 
 def _free_local_port() -> int:
@@ -500,23 +559,59 @@ class RcloneBackend(PluginBackend):
     # ------------------------------------------------------------------
     # rc API + cat/rcat helpers
     # ------------------------------------------------------------------
-    async def _rc_call(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=RC_CALL_TIMEOUT_SECONDS) as client:
+    async def _rc_call(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        rc_timeout: float = RC_CALL_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        # `fs`/`srcFs`/`dstFs` are inline connection strings, credentials
+        # included, and rclone quotes them in its error text: log lines and
+        # errors name only the rc path and the path inside the remote, with
+        # rclone's own words passed through `redact_remotes`.
+        connection_strings = [payload.get(key) for key in ("fs", "srcFs", "dstFs")]
+        remote = redact_remotes(
+            str(payload.get("remote", payload.get("srcRemote", ""))),
+            *connection_strings,
+        )
+        started = time.monotonic()
+        async with httpx.AsyncClient(timeout=rc_timeout) as client:
             try:
                 response = await client.post(f"{self._rc_base_url}{path}", json=payload)
+            except httpx.TimeoutException as error:
+                elapsed = time.monotonic() - started
+                logger.warning(
+                    "rclone rc %s %r timed out after %.1fs", path, remote, elapsed,
+                )
+                raise UpstreamTimeoutError(
+                    f"rclone rc {path} {remote!r} did not answer within "
+                    f"{rc_timeout:.0f}s ({type(error).__name__})",
+                ) from error
             except httpx.HTTPError as error:
-                raise PluginBackendError(f"rclone rc call failed: {error}") from error
+                detail = redact_remotes(str(error), *connection_strings)
+                raise PluginBackendError(
+                    f"rclone rc {path} {remote!r} failed: "
+                    f"{type(error).__name__}: {detail}",
+                ) from error
+        elapsed = time.monotonic() - started
         data: dict[str, Any] = response.json() if response.content else {}
         if response.status_code >= 400:
-            raise _rc_error(
-                response.status_code,
-                str(data.get("error") or f"rc {path} failed"),
+            raw = str(data.get("error") or f"rc {path} failed")
+            message = redact_remotes(raw, *connection_strings)
+            logger.warning(
+                "rclone rc %s %r failed after %.1fs (%d): %s",
+                path, remote, elapsed, response.status_code, message,
             )
+            raise _rc_error(response.status_code, message, raw=raw)
+        if elapsed >= RC_SLOW_CALL_SECONDS:
+            logger.warning("rclone rc %s %r took %.1fs", path, remote, elapsed)
         return data
 
     async def _run_subprocess(
         self,
         *args: str,
+        fs: str | None = None,
         stdin_bytes: bytes | None = None,
     ) -> bytes:
         process = await asyncio.create_subprocess_exec(
@@ -528,9 +623,16 @@ class RcloneBackend(PluginBackend):
         )
         stdout, stderr = await process.communicate(stdin_bytes)
         if process.returncode != 0:
-            raise PluginBackendError(
-                f"rclone {args[0]} failed: {stderr.decode(errors='replace')}",
+            # The target is `fs` + a path, and `fs` is an inline connection
+            # string (see `redact_remotes`). rclone quotes the target's
+            # directory in its error text, so mask by `fs`; the full target
+            # stays in the list for a message that quotes it whole.
+            detail = redact_remotes(
+                stderr.decode(errors="replace"),
+                fs,
+                *(arg for arg in args if arg.startswith(":")),
             )
+            raise PluginBackendError(f"rclone {args[0]} failed: {detail}")
         return stdout
 
     @staticmethod
@@ -623,6 +725,7 @@ class RcloneBackend(PluginBackend):
         result = await self._rc_call(
             "/operations/list",
             {"fs": fs, "remote": parent_id or ""},
+            rc_timeout=RC_LIST_TIMEOUT_SECONDS,
         )
         return [self._to_resource(item) for item in result.get("list", [])]
 
@@ -670,7 +773,9 @@ class RcloneBackend(PluginBackend):
         returncode = await process.wait()
         if returncode != 0 and not found_output:
             stderr = (await process.stderr.read()) if process.stderr else b""
-            detail = stderr.decode(errors="replace")
+            # The target starts with `fs`, an inline connection string
+            # (see `redact_remotes`) that rclone quotes in its error text.
+            detail = redact_remotes(stderr.decode(errors="replace"), fs)
             raise ResourceNotFoundError(f"{resource_id}: {detail}")
 
     async def create_resource(
@@ -693,6 +798,7 @@ class RcloneBackend(PluginBackend):
             await self._run_subprocess(
                 "rcat",
                 self._target(fs, remote),
+                fs=fs,
                 stdin_bytes=body,
             )
         return await self.get_resource(config, remote)
@@ -729,6 +835,7 @@ class RcloneBackend(PluginBackend):
             await self._run_subprocess(
                 "rcat",
                 self._target(fs, new_remote),
+                fs=fs,
                 stdin_bytes=body,
             )
 
