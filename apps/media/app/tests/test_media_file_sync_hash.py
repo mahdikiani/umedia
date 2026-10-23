@@ -167,3 +167,82 @@ async def test_changed_remote_file_recomputes_hash(
         ("read", CONNECTION_ID, "a.txt"),
         ("read", CONNECTION_ID, "a.txt"),
     ]
+
+
+@pytest.fixture(autouse=True)
+def _clean_hash_failures() -> None:
+    from apps.media_files import services
+
+    services._hash_failures.clear()
+    yield
+    services._hash_failures.clear()
+
+
+def _reads_of(harness: Harness, reference: str) -> int:
+    return sum(1 for call in harness.plugins.plugin_calls("read") if call[2] == reference)
+
+
+@pytest.mark.asyncio
+async def test_hash_backfill_backs_off_files_that_keep_failing(
+    harness: Harness,
+) -> None:
+    """A file whose download is truncated must not be retried on every cycle."""
+    harness.plugins.listings[CONNECTION_ID] = _tree_listing()
+    harness.plugins.store["a.txt"] = b"abc"
+    harness.plugins.fail_read.add("docs/b.txt")
+    await harness.service.import_from_provider(CONNECTION_ID, actor_user_id=ACTOR_ID)
+
+    await harness.service.hash_missing_content(CONNECTION_ID)
+    await harness.service.hash_missing_content(CONNECTION_ID)
+    await harness.service.hash_missing_content(CONNECTION_ID)
+
+    assert _reads_of(harness, "docs/b.txt") == 1
+    objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
+    by_reference = {obj.content_reference: obj for obj in objects}
+    assert by_reference["a.txt"].content_hash == hashlib.sha256(b"abc").hexdigest()
+    assert by_reference["docs/b.txt"].content_hash is None
+
+
+@pytest.mark.asyncio
+async def test_hash_backoff_expires_and_grows(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.media_files import services
+
+    clock = [1000.0]
+    monkeypatch.setattr(services.time, "monotonic", lambda: clock[0])
+    harness.plugins.listings[CONNECTION_ID] = _tree_listing()
+    harness.plugins.fail_read.add("docs/b.txt")
+    await harness.service.import_from_provider(CONNECTION_ID, actor_user_id=ACTOR_ID)
+
+    await harness.service.hash_missing_content(CONNECTION_ID)  # attempt 1
+    clock[0] += services.HASH_RETRY_BASE_SECONDS + 1
+    await harness.service.hash_missing_content(CONNECTION_ID)  # attempt 2
+    assert _reads_of(harness, "docs/b.txt") == 2
+    clock[0] += services.HASH_RETRY_BASE_SECONDS + 1  # delay doubled: still backing off
+    await harness.service.hash_missing_content(CONNECTION_ID)
+    assert _reads_of(harness, "docs/b.txt") == 2
+    clock[0] += 2 * services.HASH_RETRY_BASE_SECONDS
+    await harness.service.hash_missing_content(CONNECTION_ID)  # attempt 3
+    assert _reads_of(harness, "docs/b.txt") == 3
+
+
+@pytest.mark.asyncio
+async def test_hash_success_clears_failure_memory(harness: Harness) -> None:
+    from apps.media_files import services
+
+    harness.plugins.listings[CONNECTION_ID] = _tree_listing()
+    harness.plugins.fail_read.add("docs/b.txt")
+    await harness.service.import_from_provider(CONNECTION_ID, actor_user_id=ACTOR_ID)
+    await harness.service.hash_missing_content(CONNECTION_ID)
+    assert services._hash_failures
+
+    harness.plugins.fail_read.clear()
+    services._hash_failures.clear()  # simulate the backoff window having passed
+    await harness.service.hash_missing_content(CONNECTION_ID)
+
+    objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
+    by_reference = {obj.content_reference: obj for obj in objects}
+    assert by_reference["a.txt"].content_hash
+    assert by_reference["docs/b.txt"].content_hash
+    assert not services._hash_failures

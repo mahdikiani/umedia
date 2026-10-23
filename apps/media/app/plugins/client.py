@@ -160,8 +160,9 @@ class PluginClient:
                     if attempt + 1 < attempts:
                         await asyncio.sleep(READ_RETRY_BACKOFF_SECONDS * (2**attempt))
                         continue
+                    detail = f"{type(error).__name__}: {error}"
                     raise PluginRPCError(
-                        f"Plugin call {method} {path} failed: {error}",
+                        f"Plugin call {method} {path} failed: {detail}",
                     ) from error
                 if response.status_code >= 400:
                     code, data = _error_body(response)
@@ -301,7 +302,7 @@ class PluginClient:
                     await asyncio.sleep(READ_RETRY_BACKOFF_SECONDS * (2**attempt))
                     continue
                 raise PluginRPCError(
-                    f"Plugin content read failed: {error}",
+                    f"Plugin content read failed: {type(error).__name__}: {error}",
                 ) from error
         raise PluginRPCError("Plugin content read failed") from last_error
 
