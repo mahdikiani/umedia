@@ -420,7 +420,8 @@ async def test_content_hash_backfill_is_deduplicated_per_connection(
 
     assert state.hash_tasks["connection-1"] is task
     await task
-    service.hash_missing_content.assert_awaited_once_with("connection-1")
+    service.hash_missing_content.assert_awaited_once()
+    assert service.hash_missing_content.await_args.args == ("connection-1",)
     assert state.hash_tasks == {}
 
 
@@ -466,6 +467,18 @@ def _recording_run(
     return _fake_run
 
 
+@pytest.fixture
+def no_hash_backfill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For poller tests that are not about the hash pass: the pass the
+    poller schedules would outlive the test and still be writing its
+    `job_runs` row when the event loop closes."""
+    from apps.media_files import worker
+
+    monkeypatch.setattr(
+        worker, "schedule_content_hash_backfill", lambda _state, _uid: None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_poller_skips_disabled_and_already_running_connections(
     harness: Harness,
@@ -503,6 +516,7 @@ async def test_poller_skips_disabled_and_already_running_connections(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_hash_backfill")
 async def test_poller_uses_import_root_owner_else_first_active_admin(
     harness: Harness,
     monkeypatch: pytest.MonkeyPatch,
@@ -546,6 +560,7 @@ async def test_poller_uses_import_root_owner_else_first_active_admin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_hash_backfill")
 async def test_poller_continues_after_a_failed_connection(
     harness: Harness,
     monkeypatch: pytest.MonkeyPatch,
@@ -572,6 +587,7 @@ async def test_poller_continues_after_a_failed_connection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("no_hash_backfill")
 async def test_poller_mutates_the_existing_empty_active_syncs_set(
     harness: Harness,
     monkeypatch: pytest.MonkeyPatch,

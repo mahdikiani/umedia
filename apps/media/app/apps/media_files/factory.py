@@ -17,6 +17,7 @@ from apps.user_access_keys.factory import (
     build_user_access_key_service_from_state,
 )
 
+from .jobs import job_run
 from .notifications import NotificationRepository, NotificationService
 from .plugin_gateway import MediaPluginGateway
 from .repository import MediaFileRepository
@@ -114,31 +115,52 @@ async def run_inbound_sync(
     same problem every cycle).
     """
     run_id = run_id or uuid4().hex
-    service = build_media_file_service_from_state(state)
     options: dict[str, Any] = {"actor_user_id": actor_user_id}
     if confirm_missing is not None:
         options["confirm_missing"] = confirm_missing
-    try:
-        result = await service.import_from_provider(connection_uid, **options)
-    except Exception as error:
+    # Its own trace, run id and `job_runs` record (apps/media_files/jobs.py).
+    async with job_run(
+        state,
+        kind="sync",
+        connection_id=connection_uid,
+        trigger=trigger,
+        run_id=run_id,
+    ) as run:
+        service = build_media_file_service_from_state(state)
+        try:
+            result = await service.import_from_provider(connection_uid, **options)
+        except Exception as error:
+            await _record_sync_outcome(
+                state,
+                connection_uid,
+                actor_user_id,
+                trigger=trigger,
+                run_id=run_id,
+                problem=_sync_failure_text(error),
+            )
+            raise
+        problem = _sync_incomplete_text(connection_uid, result)
+        run.result = result
+        run.partial = sync_is_incomplete(result)
         await _record_sync_outcome(
             state,
             connection_uid,
             actor_user_id,
             trigger=trigger,
             run_id=run_id,
-            problem=_sync_failure_text(error),
+            problem=problem,
         )
-        raise
-    await _record_sync_outcome(
-        state,
-        connection_uid,
-        actor_user_id,
-        trigger=trigger,
-        run_id=run_id,
-        problem=_sync_incomplete_text(connection_uid, result),
+        return result
+
+
+def sync_is_incomplete(result: dict[str, Any]) -> bool:
+    """Whether a sync pass finished but left something out: folders it
+    could not list (e.g. OneDrive's Personal Vault) or missing objects it
+    held back from trash. Its job run is then `partial`, not `ok`; the
+    poll/manual sync and the connect-time import both use this rule."""
+    return any(
+        result.get(key) for key in ("failed_folders", "skipped_folders", "missing_held")
     )
-    return result
 
 
 def _sync_failure_text(error: Exception) -> str:

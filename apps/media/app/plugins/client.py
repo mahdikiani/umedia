@@ -30,6 +30,13 @@ from .contracts import (
     encode_header_json,
     encode_resource_id,
 )
+from .tracing import (
+    CONNECTION_ID_HEADER,
+    REQUEST_ID_HEADER,
+    RUN_ID_HEADER,
+    current_run_id,
+    new_request_id,
+)
 
 CONFIG_HEADER = "X-Umedia-Connection-Config"
 
@@ -125,14 +132,40 @@ class PluginRPCError(RuntimeError):
         # (`ReadTimeout`, `ConnectError`, ...): a slow call and a dead
         # plugin need different handling (see the sync walk).
         self.transport_error = transport_error
-        # Set by `PluginClient._request`: the call with its query
-        # (`GET /resources?parent_id=DCIM`), how long it took in total and
-        # how many attempts it made. The query stays out of the message:
-        # GlitchTip groups issues by title, so a folder name in it would
-        # open one issue per folder.
+        # Set by `PluginClient`: the call with its query
+        # (`GET /resources?parent_id=DCIM`), how long it took in total, how
+        # many attempts it made, and the ids it was sent with (see
+        # plugins/tracing.py) -- the plugin's own log lines carry the same.
+        # The query stays out of the message: GlitchTip groups issues by
+        # title, so a folder name in it would open one issue per folder.
         self.target: str | None = None
         self.elapsed_seconds: float | None = None
         self.attempts: int | None = None
+        self.trace: dict[str, str] = {}
+
+
+#: A successful call slower than this is logged at INFO (others at DEBUG:
+#: one sync walk makes thousands of listing calls).
+SLOW_CALL_SECONDS = 10.0
+
+
+def _trace_text(trace: dict[str, str]) -> str:
+    return " ".join(f"{key}={value}" for key, value in trace.items())
+
+
+def _note_success(
+    target: str, started: float, status: int, trace: dict[str, str],
+) -> None:
+    elapsed = time.monotonic() - started
+    logger.log(
+        logging.INFO if elapsed >= SLOW_CALL_SECONDS else logging.DEBUG,
+        "Plugin call %s -> %d in %.0fms [%s]",
+        target,
+        status,
+        elapsed * 1000,
+        _trace_text(trace),
+        extra={"plugin_call": target, "duration_ms": round(elapsed * 1000), **trace},
+    )
 
 
 #: Content-read answers that mean the bytes are not there, or refused for
@@ -158,22 +191,31 @@ def _note_failure(
     target: str,
     started: float,
     attempts: int,
+    trace: dict[str, str] | None = None,
 ) -> None:
-    """Attach timing to a failed call and log it -- httpx only logs calls
-    that got a response, so a timeout used to leave no trace at all."""
+    """Attach timing and ids to a failed call and log it -- httpx only logs
+    calls that got a response, so a timeout used to leave no trace at all."""
     error.target = target
     error.elapsed_seconds = round(time.monotonic() - started, 3)
     error.attempts = attempts
+    error.trace = dict(trace or {})
     # A 4xx is the plugin's considered answer (not found, bad config) and
     # often expected by the caller; no answer or a 5xx is worth a warning.
     expected = error.status_code is not None and error.status_code < 500
     logger.log(
         logging.INFO if expected else logging.WARNING,
-        "Plugin call %s failed after %.1fs (%d attempt(s)): %s",
+        "Plugin call %s failed after %.1fs (%d attempt(s)) [%s]: %s",
         target,
         error.elapsed_seconds,
         attempts,
+        _trace_text(error.trace),
         error.transport_error or error.status_code,
+        extra={
+            "plugin_call": target,
+            "duration_ms": round(error.elapsed_seconds * 1000),
+            "attempts": attempts,
+            **error.trace,
+        },
     )
 
 
@@ -200,6 +242,15 @@ def _config_headers(config: dict[str, Any]) -> dict[str, str]:
     return {CONFIG_HEADER: encode_header_json(config)}
 
 
+def _trace_headers(trace: dict[str, str]) -> dict[str, str]:
+    names = {
+        "request_id": REQUEST_ID_HEADER,
+        "connection_id": CONNECTION_ID_HEADER,
+        "run_id": RUN_ID_HEADER,
+    }
+    return {names[key]: value for key, value in trace.items()}
+
+
 class PluginClient:
     """Calls one plugin process, identified by its Unix socket path."""
 
@@ -208,9 +259,23 @@ class PluginClient:
         socket_path: Path,
         *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        connection_id: str | None = None,
     ) -> None:
         self._socket_path = socket_path
         self._timeout = timeout
+        # Which provider connection the calls are for: sent to the plugin
+        # and put on every log line about the call.
+        self._connection_id = connection_id
+
+    def _trace(self) -> dict[str, str]:
+        """Fresh ids for one call (see plugins/tracing.py)."""
+        trace = {"request_id": new_request_id()}
+        if self._connection_id:
+            trace["connection_id"] = self._connection_id
+        run_id = current_run_id.get()
+        if run_id:
+            trace["run_id"] = run_id
+        return trace
 
     def _http_client(self) -> httpx.AsyncClient:
         transport = httpx.AsyncHTTPTransport(uds=str(self._socket_path))
@@ -231,6 +296,8 @@ class PluginClient:
     ) -> httpx.Response:
         headers = _config_headers(config) if config is not None else {}
         headers.update(kwargs.pop("headers", None) or {})
+        trace = self._trace()
+        headers.update(_trace_headers(trace))
         attempts = READ_RETRY_ATTEMPTS if retry else 1
         # Which folder/object, not just which route: logged and kept on the
         # error as `target`.
@@ -270,7 +337,7 @@ class PluginClient:
                         f"{type(error).__name__}: {error}",
                         transport_error=type(error).__name__,
                     )
-                    _note_failure(rpc_error, target, started, attempt + 1)
+                    _note_failure(rpc_error, target, started, attempt + 1, trace)
                     raise rpc_error from error
                 if response.status_code >= 400:
                     code, data = _error_body(response)
@@ -281,8 +348,9 @@ class PluginClient:
                         code=code,
                         data=data,
                     )
-                    _note_failure(rpc_error, target, started, attempt + 1)
+                    _note_failure(rpc_error, target, started, attempt + 1, trace)
                     raise rpc_error
+                _note_success(target, started, response.status_code, trace)
                 return response
         # Unreachable: the loop above always either returns or raises.
         raise PluginRPCError(f"Plugin call {route} failed") from last_error
@@ -397,8 +465,11 @@ class PluginClient:
         headers = _config_headers(config)
         if range_header:
             headers["Range"] = range_header
+        trace = self._trace()
+        headers.update(_trace_headers(trace))
         started = time.monotonic()
-        target = "GET /resources/{id}/content"
+        # For log lines only (the error messages stay file-agnostic).
+        target = f"GET /resources/{resource_id}/content"
         last_error: Exception | None = None
         for attempt in range(READ_RETRY_ATTEMPTS):
             yielded = False
@@ -422,11 +493,12 @@ class PluginClient:
                             code=code,
                             data=data,
                         )
-                        _note_failure(rpc_error, target, started, attempt + 1)
+                        _note_failure(rpc_error, target, started, attempt + 1, trace)
                         raise rpc_error
                     async for chunk in response.aiter_bytes():
                         yielded = True
                         yield chunk
+                    _note_success(target, started, response.status_code, trace)
                     return
             except httpx.HTTPError as error:
                 last_error = error
@@ -439,7 +511,7 @@ class PluginClient:
                     f"Plugin content read {what}: {type(error).__name__}: {error}",
                     transport_error=type(error).__name__,
                 )
-                _note_failure(rpc_error, target, started, attempt + 1)
+                _note_failure(rpc_error, target, started, attempt + 1, trace)
                 raise rpc_error from error
         raise PluginRPCError("Plugin content read failed") from last_error
 

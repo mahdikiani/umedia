@@ -148,23 +148,41 @@ def _schedule_import(request: Request, connection_uid: str, actor_uid: str) -> N
     from apps.media_files.factory import (
         build_media_file_service_from_state,
         build_notification_service_from_state,
+        sync_is_incomplete,
     )
+    from apps.media_files.jobs import job_run
 
     job_uid = uuid4().hex
 
     async def _run() -> None:
         try:
-            service = build_media_file_service_from_state(request.app.state)
-            await service.import_if_enabled(
-                connection_uid,
-                actor_user_id=actor_uid,
-            )
-            from apps.media_files.worker import schedule_content_hash_backfill
+            connection = await _repository(request).get(connection_uid)
+            if connection is not None and connection.import_existing:
+                # A real import is a sync walk: its own trace and run record.
+                async with job_run(
+                    request.app.state,
+                    kind="sync",
+                    connection_id=connection_uid,
+                    trigger="connect",
+                    run_id=job_uid,
+                ) as run:
+                    service = build_media_file_service_from_state(request.app.state)
+                    result = await service.import_if_enabled(
+                        connection_uid,
+                        actor_user_id=actor_uid,
+                    )
+                    run.result = result or {}
+                    # Folders it could not list: recorded `partial`, as a
+                    # poll or manual sync would be, not as a complete import.
+                    run.partial = sync_is_incomplete(run.result)
+                from apps.media_files.worker import schedule_content_hash_backfill
 
-            schedule_content_hash_backfill(
-                request.app.state,
-                connection_uid,
-            )
+                # Only after an import: without one nothing is indexed yet,
+                # and the pass would just record an empty run.
+                schedule_content_hash_backfill(
+                    request.app.state,
+                    connection_uid,
+                )
         except Exception as error:
             try:
                 await build_notification_service_from_state(

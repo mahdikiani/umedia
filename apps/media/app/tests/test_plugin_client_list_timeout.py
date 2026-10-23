@@ -107,7 +107,7 @@ async def test_a_listing_read_timeout_is_not_retried(
     assert record.levelno == logging.WARNING
     assert record.args[0] == error.target
     assert record.args[2] == 1  # attempts
-    assert record.args[3] == "ReadTimeout"
+    assert record.args[-1] == "ReadTimeout"
     # The walk treats a slow folder as that folder's problem, not the
     # connection's: it is skipped and the walk goes on.
     assert _is_folder_level_failure(error)

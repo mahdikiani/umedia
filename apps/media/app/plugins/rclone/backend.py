@@ -564,7 +564,11 @@ class RcloneBackend(PluginBackend):
                 if not line:
                     return
                 text = line.decode(errors="replace").rstrip()
-                logger.info("[rclone rcd:%s] %s", name, text)
+                # DEBUG only (dropped by default): rcd's error lines can quote
+                # the inline remote, credentials included, and it repeats
+                # "Can't save config" for every call. `_rc_call` logs each
+                # failure itself, its connection string masked.
+                logger.debug("[rclone rcd:%s] %s", name, text)
 
     async def _wait_until_rcd_ready(self) -> None:
         async with httpx.AsyncClient(timeout=2.0) as client:

@@ -1640,12 +1640,15 @@ class MediaFileService(MediaFileSearchMixin):
         provider_connection_id: str,
         *,
         batch_size: int = 100,
+        stats: dict[str, int] | None = None,
     ) -> int:
         """Hash indexed files in bounded pages without delaying provider sync.
 
         A file the provider says is not there (404/422) is recorded as
         unreadable on its StorageObject and skipped by later passes, even
-        after a restart; other failures back off in memory.
+        after a restart; other failures back off in memory. Returns how many
+        hashes were stored; `stats`, when given, also gets the failed / in
+        backoff / newly unreadable counts (the job run record).
         """
         completed = 0
         failed = 0
@@ -1718,6 +1721,8 @@ class MediaFileService(MediaFileSearchMixin):
                 skipped,
                 unreadable,
             )
+        if stats is not None:
+            stats.update(failed=failed, in_backoff=skipped, unreadable=unreadable)
         return completed
 
     async def import_if_enabled(
