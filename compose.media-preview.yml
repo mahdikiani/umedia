@@ -5,7 +5,7 @@
 # reusing that project name from this checkout would let `docker compose`
 # associate with -- and potentially disrupt -- those already-running
 # containers. This is a testing convenience, not the Phase 5 wiring
-# (docs/09-tasks.md); apps/api still exists and is untouched.
+# (docs/09-tasks.md); apps/api has since been deleted.
 #
 # Path-based routing on one domain: `/api/v1/*` (every apps/media route --
 # auth, provider-connections, resources, and the /f/{uid} public-link
