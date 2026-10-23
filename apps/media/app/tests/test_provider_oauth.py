@@ -679,3 +679,24 @@ async def test_oauth_start_and_complete_routes(
     assert created["provider_type"] == "google_drive"
     assert created["name"] == "gdrive"
     assert created["status"] == "configured"
+
+
+def test_oauth_state_store_verifies_across_instances_with_shared_secret() -> None:
+    secret = b"k" * 32
+    state = OAuthStateStore(secret=secret).create("google_drive")
+    other_replica = OAuthStateStore(secret=secret)
+    assert other_replica.consume(state, provider_type="google_drive") is True
+
+
+def test_oauth_state_store_rejects_forged_and_foreign_secret_states() -> None:
+    state = OAuthStateStore(secret=b"a" * 32).create("google_drive")
+    assert OAuthStateStore(secret=b"b" * 32).consume(
+        state, provider_type="google_drive"
+    ) is False
+    assert OAuthStateStore().consume("not-a-token", provider_type="s3") is False
+
+
+def test_oauth_state_store_rejects_expired_state() -> None:
+    store = OAuthStateStore(ttl_seconds=-1)
+    state = store.create("google_drive")
+    assert store.consume(state, provider_type="google_drive") is False

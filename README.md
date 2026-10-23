@@ -33,7 +33,7 @@ docker compose -f compose.release.yaml pull
 docker compose -f compose.release.yaml up -d
 ```
 
-Open <http://localhost:8080>. The sample uses local storage and Docker-managed volumes to keep the database, files, and generated encryption key. Back up the volumes together. Optional cloud-provider credentials and public-domain setup are covered in [Getting Started](https://mahdikiani.github.io/umedia/getting-started/). To use a different release, set `UMEDIA_VERSION` in `.env` to its version tag.
+Open <http://localhost:8080>. The sample uses local storage and Docker-managed volumes to keep the database, files, and generated encryption key. Back up the data and storage volumes together, but keep the key volume (`umedia-secrets`, or your own `UMEDIA_MASTER_KEY`) somewhere separate: it holds the key that decrypts stored provider credentials. Installs created before this volume existed keep their key in `/data/secrets` and continue to work. Optional cloud-provider credentials and public-domain setup are covered in [Getting Started](https://mahdikiani.github.io/umedia/getting-started/). To use a different release, set `UMEDIA_VERSION` in `.env` to its version tag.
 
 ## Support and contributions
 

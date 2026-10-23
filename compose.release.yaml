@@ -7,6 +7,10 @@ services:
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/umedia.sqlite3
       UMEDIA_DATA_DIR: /data
+      # Own volume: a backup of umedia-data alone must not contain the key that
+      # decrypts the stored credentials. Existing installs keep working: a key
+      # already in /data/secrets is still found and used.
+      UMEDIA_SECRETS_DIR: /secrets
       UMEDIA_LOCAL_STORAGE_ROOT: /storage
       UMEDIA_SYNC_POLL_INTERVAL_SECONDS: ${UMEDIA_SYNC_POLL_INTERVAL_SECONDS:-900}
       UMEDIA_GOOGLE_OAUTH_CLIENT_ID: ${UMEDIA_GOOGLE_OAUTH_CLIENT_ID:-}
@@ -21,6 +25,7 @@ services:
     volumes:
       - umedia-data:/data
       - umedia-storage:/storage
+      - umedia-secrets:/secrets
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
@@ -54,3 +59,4 @@ services:
 volumes:
   umedia-data:
   umedia-storage:
+  umedia-secrets:
