@@ -30,6 +30,19 @@ class Settings(config.Settings):
     master_key: str | None = dataclasses.field(
         default_factory=lambda: os.getenv("UMEDIA_MASTER_KEY"),
     )
+    # How requests are authenticated. "lite" (default) = UMedia's own accounts;
+    # "usso" = trust the USSO access token of the product it runs inside
+    # (apps/auth/usso_mode.py). USSO_BASE_URL is required in that mode.
+    auth_mode: str = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_AUTH_MODE", "lite").strip().lower(),
+    )
+    usso_base_url: str = dataclasses.field(
+        default_factory=lambda: os.getenv("USSO_BASE_URL", "").strip(),
+    )
+    # Optional: only accept tokens issued for this USSO tenant.
+    usso_tenant_id: str | None = dataclasses.field(
+        default_factory=lambda: os.getenv("UMEDIA_USSO_TENANT_ID") or None,
+    )
     # Where the generated master.key lives when UMEDIA_MASTER_KEY is unset.
     # Unset keeps the legacy <data_dir>/secrets; set it to a separate volume so
     # backups of the data volume do not also contain the key.

@@ -10,6 +10,7 @@ from usso.lite.router import REFRESH_COOKIE_NAME
 from usso.lite.schemas import TokenPair
 
 from .config import REFRESH_TOKEN_DAYS
+from .middleware import resolve_optional_user
 from .schemas import (
     AuthStateResponse,
     AuthStateUser,
@@ -24,6 +25,7 @@ from .schemas import (
     SessionResponse,
 )
 from .services import AuthService
+from .usso_mode import SessionUser
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -210,6 +212,16 @@ async def refresh_from_cookie_or_body(
     return json_response
 
 
+_NOT_USSO_MODE = object()
+
+
+async def _usso_mode_user(request: Request) -> object:
+    """In `UMEDIA_AUTH_MODE=usso`: the caller (or None); otherwise a sentinel."""
+    if getattr(request.app.state, "usso_auth", None) is None:
+        return _NOT_USSO_MODE
+    return await resolve_optional_user(request)
+
+
 async def _state_user(service: AuthService, uid: str) -> AuthStateUser | None:
     """Build the `/auth/state` user block (usso.lite keeps the email on
     identifier rows, not the user row, so this is a summary lookup)."""
@@ -236,6 +248,19 @@ async def get_auth_state(
     `request.state.user` the way private routes do -- it verifies the
     cookie itself, the same way the middleware would.
     """
+    usso_user = await _usso_mode_user(request)
+    if usso_user is not _NOT_USSO_MODE:
+        return AuthStateResponse(
+            configured=True,
+            authenticated=usso_user is not None,
+            user=None
+            if usso_user is None
+            else AuthStateUser(
+                uid=usso_user.uid,
+                email=usso_user.email,
+                roles=usso_user.roles,
+            ),
+        )
     service = _service(request)
     configured = await service.is_configured()
     user = None
@@ -408,6 +433,11 @@ async def create_session(
 @router.get("/sessions/current", response_model=CurrentSessionResponse)
 async def get_current_session(request: Request) -> CurrentSessionResponse:
     """Return who the current session belongs to."""
+    user = request.state.user
+    if isinstance(user, SessionUser):
+        return CurrentSessionResponse(
+            uid=user.uid, email=user.email, roles=user.roles, name=user.name,
+        )
     summary = await _service(request).get_user_summary(request.state.user.uid)
     return CurrentSessionResponse(
         uid=summary.uid,
