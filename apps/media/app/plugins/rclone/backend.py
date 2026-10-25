@@ -43,6 +43,11 @@ RCD_STARTUP_TIMEOUT_SECONDS = 15.0
 HOST_KEY_PROBE_TIMEOUT_SECONDS = 10.0
 RCD_STOP_TIMEOUT_SECONDS = 5.0
 RC_CALL_TIMEOUT_SECONDS = 30.0
+# A listing pages through the whole folder at the provider; a big Google
+# Drive photo folder needs far more than 30s. Stays under the core's
+# `plugins.client.LIST_TIMEOUT` read limit (120s) so the plugin answers
+# with its own error first.
+RC_LIST_TIMEOUT_SECONDS = 110.0
 READ_CHUNK_SIZE = 64 * 1024
 # Remote types whose listings carry a content hash at no extra cost (the
 # provider stores it). sftp/ftp/webdav are left out on purpose: rclone would
@@ -475,8 +480,14 @@ class RcloneBackend(PluginBackend):
     # ------------------------------------------------------------------
     # rc API + cat/rcat helpers
     # ------------------------------------------------------------------
-    async def _rc_call(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=RC_CALL_TIMEOUT_SECONDS) as client:
+    async def _rc_call(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        http_timeout: float = RC_CALL_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             try:
                 response = await client.post(f"{self._rc_base_url}{path}", json=payload)
             except httpx.HTTPError as error:
@@ -601,7 +612,9 @@ class RcloneBackend(PluginBackend):
         params: dict[str, Any] = {"fs": fs, "remote": parent_id or ""}
         if config.get("remote_type") in NATIVE_HASH_REMOTES:
             params["opt"] = {"showHash": True}
-        result = await self._rc_call("/operations/list", params)
+        result = await self._rc_call(
+            "/operations/list", params, http_timeout=RC_LIST_TIMEOUT_SECONDS,
+        )
         return [self._to_resource(item) for item in result.get("list", [])]
 
     async def get_resource(self, config: dict[str, Any], resource_id: str) -> Resource:

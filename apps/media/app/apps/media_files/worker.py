@@ -9,8 +9,10 @@ remove trash roots soft-deleted more than
 provider connection and run the same reconcile as
 `POST /providers/{uid}/sync`. Sequential on purpose (SQLite; one plugin
 walk at a time). A failed provider is logged and skipped so one outage
-cannot abort the tick. Incomplete walks never mark objects missing --
-`import_from_provider` raises before that step.
+cannot abort the tick, then backed off (30 min .. 24 h) so a broken
+connection reports one error event instead of one per tick. Incomplete
+walks never mark objects missing -- `import_from_provider` raises before
+that step (a single unlistable sub-folder is skipped, not fatal).
 
 Purging is library-only (doc 11's v1 rule -- StorageObjects and the
 provider's bytes always survive), so the purge service is assembled from
@@ -21,11 +23,13 @@ either would be a bug, not a missing dependency.
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.provider_connections.repository import ProviderConnectionRepository
+from plugins.client import PluginRPCError
 
 from .factory import build_media_file_service_from_state, run_inbound_sync
 from .repository import MediaFileRepository
@@ -101,6 +105,60 @@ async def purge_expired_trash(
     return removed
 
 
+# A connection whose provider keeps failing (revoked token, a listing that
+# always times out) was retried on every 15-minute tick, one GlitchTip event
+# each (UMEDIA-4/6: 100+ events). Back off per connection in this process:
+# 30 min, doubling, up to 24 h. "Sync now" ignores the backoff, and any
+# successful sync clears it (see `factory.record_sync_health`).
+SYNC_RETRY_BASE_SECONDS = 1800.0
+SYNC_RETRY_MAX_SECONDS = 24 * 3600.0
+# A transport failure (timeout, connect error) is often a blip: report it as
+# an error only once it has failed this many polls in a row.
+TRANSIENT_REPORT_AFTER = 3
+
+
+class SyncFailure:
+    """Backoff bookkeeping for one connection: consecutive failed polls,
+    when to try again, and the last error message already reported."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+        self.retry_at = 0.0
+        self.reported: str | None = None
+
+
+def _sync_failures(state: Any) -> dict[str, SyncFailure]:  # noqa: ANN401
+    failures = getattr(state, "sync_failures", None)
+    if failures is None:
+        failures = {}
+        state.sync_failures = failures
+    return failures
+
+
+def _note_sync_failure(
+    failures: dict[str, SyncFailure],
+    connection_uid: str,
+    error: Exception,
+    now: float,
+) -> tuple[SyncFailure, bool]:
+    """Record one failed poll; return it and whether to report an error
+    event (first time this message is worth reporting) or only warn."""
+    failure = failures.setdefault(connection_uid, SyncFailure())
+    failure.attempts += 1
+    delay = min(
+        SYNC_RETRY_BASE_SECONDS * 2 ** (failure.attempts - 1),
+        SYNC_RETRY_MAX_SECONDS,
+    )
+    failure.retry_at = now + delay
+    message = str(error)
+    transient = isinstance(error, PluginRPCError) and error.status_code is None
+    due = not transient or failure.attempts >= TRANSIENT_REPORT_AFTER
+    report = due and failure.reported != message
+    if report:
+        failure.reported = message
+    return failure, report
+
+
 def _state(app_or_state: Any) -> Any:  # noqa: ANN401
     return getattr(app_or_state, "state", app_or_state)
 
@@ -139,11 +197,21 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
         active_syncs = set()
         state.active_syncs = active_syncs
 
+    failures = _sync_failures(state)
     connections = ProviderConnectionRepository(state.session_factory)
     files = MediaFileRepository(state.session_factory)
     reconciled = 0
     for connection in await connections.list():
         if not connection.enabled or connection.uid in active_syncs:
+            continue
+        failure = failures.get(connection.uid)
+        if failure is not None and time.monotonic() < failure.retry_at:
+            logger.debug(
+                "Skipping inbound sync for '%s': backing off after %d "
+                "failed poll(s)",
+                connection.uid,
+                failure.attempts,
+            )
             continue
         # Claim the lock before any await so POST 409 / GET running stay
         # truthful even while we resolve the actor.
@@ -164,12 +232,30 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
                 connection.uid,
                 result,
             )
+            failures.pop(connection.uid, None)
             reconciled += 1
-        except Exception:
-            logger.exception(
-                "Inbound poll sync for '%s' failed",
-                connection.uid,
+        except Exception as error:
+            failure, report = _note_sync_failure(
+                failures, connection.uid, error, time.monotonic(),
             )
+            retry_in = int(failure.retry_at - time.monotonic())
+            if report:
+                logger.exception(
+                    "Inbound poll sync for '%s' failed (attempt %d, next "
+                    "try in %ds)",
+                    connection.uid,
+                    failure.attempts,
+                    retry_in,
+                )
+            else:
+                logger.warning(
+                    "Inbound poll sync for '%s' failed again (attempt %d, "
+                    "next try in %ds): %s",
+                    connection.uid,
+                    failure.attempts,
+                    retry_in,
+                    error,
+                )
         finally:
             active_syncs.discard(connection.uid)
     return reconciled
