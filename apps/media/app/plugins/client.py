@@ -37,6 +37,18 @@ TELEGRAM_LOGIN_TIMEOUT = httpx.Timeout(
 READ_RETRY_ATTEMPTS = 3
 READ_RETRY_BACKOFF_SECONDS = 0.5
 
+# `GET /resources` answers only after the plugin has paged through the whole
+# folder at the provider. A Google Drive folder with thousands of photos
+# took more than 10s on every attempt, so the import walk failed at the same
+# folder on every poll (UMEDIA-6). Keep connect/pool short so a dead plugin
+# still fails fast.
+LIST_TIMEOUT = httpx.Timeout(
+    connect=DEFAULT_TIMEOUT_SECONDS,
+    read=120.0,
+    write=DEFAULT_TIMEOUT_SECONDS,
+    pool=DEFAULT_TIMEOUT_SECONDS,
+)
+
 # Content streams (cross-storage byte copies) can run for minutes on large
 # objects. Keep a short connect/pool timeout for JSON RPC, but do not apply
 # the 10s default as a whole-response read deadline on `aiter_bytes`.
@@ -246,6 +258,7 @@ class PluginClient:
             "GET",
             "/resources",
             retry=True,
+            timeout=LIST_TIMEOUT,
             config=config,
             params=params,
         )

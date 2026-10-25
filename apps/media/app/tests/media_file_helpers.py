@@ -81,6 +81,9 @@ class FakeMediaPluginGateway:
         #: Raise from `list_resources` when `parent_id` is in this set.
         #: Used to prove an incomplete walk never looks like mass deletion.
         self.fail_list_at: set[str | None] = set()
+        #: Raise the given exception from `list_resources` for that parent_id
+        #: (e.g. a `PluginRPCError` the walk is expected to skip).
+        self.list_errors: dict[str | None, Exception] = {}
         #: parent_ref (None = root) -> resources at that level, per connection:
         #: {connection_id: {parent_ref: [PluginResource, ...]}}
         self.listings: dict[str, dict[str | None, list[PluginResource]]] = {}
@@ -98,6 +101,8 @@ class FakeMediaPluginGateway:
         self.calls.append(("list", provider_connection_id, parent_id))
         if parent_id in self.fail_list_at:
             raise RuntimeError("simulated plugin crash on list")
+        if parent_id in self.list_errors:
+            raise self.list_errors[parent_id]
         return list(
             self.listings.get(provider_connection_id, {}).get(parent_id, []),
         )

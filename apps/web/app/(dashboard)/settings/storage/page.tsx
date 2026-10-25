@@ -409,6 +409,15 @@ function StorageConnectionCard({
                   : text.connectionNeedsAttention}
               </Badge>
             </div>
+            {connection.status !== "configured" && connection.last_error && (
+              <p
+                className="line-clamp-2 break-all text-xs text-destructive"
+                dir="ltr"
+                title={connection.last_error}
+              >
+                {connection.last_error}
+              </p>
+            )}
           </div>
         </div>
         <Button

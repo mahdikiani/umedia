@@ -1,8 +1,10 @@
 """MediaFileService: ImportSync operations (mixed into `MediaFileService`)."""
 
+import logging
 from typing import Any
 
 from apps.storage_objects.schemas import StorageObjectRecord
+from plugins.client import PluginRPCError
 from plugins.contracts import Resource as PluginResource
 from plugins.contracts import UpdateResourceIn
 
@@ -19,6 +21,26 @@ from .schemas import (
     HistoryEntry,
     MediaFileRecord,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _under_skipped(
+    obj: StorageObjectRecord,
+    parents: dict[str, str | None],
+    skipped: set[str],
+) -> bool:
+    """Whether `obj` sits (at any depth) inside a folder whose listing was
+    skipped this pass. Follows the indexed parent chain, with a guard
+    against a cycle in bad provider data."""
+    parent = obj.provider_parent_ref
+    seen: set[str] = set()
+    while parent is not None and parent not in seen:
+        if parent in skipped:
+            return True
+        seen.add(parent)
+        parent = parents.get(parent)
+    return False
 
 
 class ImportSyncMixin:
@@ -61,6 +83,12 @@ class ImportSyncMixin:
         - Reappear of a previously-missing object restores the same
           MediaFile uid; user trash while the object was still `active`
           is left in trash.
+        - A sub-folder the plugin cannot list (`PluginRPCError` after the
+          client's own retries -- e.g. OneDrive's locked "Personal Vault",
+          or a listing that keeps timing out) is skipped with a warning and
+          the walk goes on. Objects under a skipped folder are never marked
+          missing. Only a failed *root* listing aborts the pass (the
+          connection itself is unusable; the poller backs off).
         """
         connection = await self._connections.get(provider_connection_id)
         if connection is None:
@@ -79,6 +107,7 @@ class ImportSyncMixin:
         seen = 0
         restored = 0
         observed: set[str] = set()
+        skipped: set[str] = set()
         visited: set[str | None] = set()
         stack: list[tuple[str | None, str]] = [(None, root.uid)]
         while stack:
@@ -86,10 +115,26 @@ class ImportSyncMixin:
             if provider_ref in visited:
                 continue
             visited.add(provider_ref)
-            resources = await self._plugins.list_resources(
-                provider_connection_id,
-                parent_id=provider_ref,
-            )
+            try:
+                resources = await self._plugins.list_resources(
+                    provider_connection_id,
+                    parent_id=provider_ref,
+                )
+            except PluginRPCError as error:
+                if provider_ref is None:
+                    raise
+                # One unreadable folder used to abort the whole walk on
+                # every poll (UMEDIA-4/6): nothing after it was ever
+                # imported and missing-marking never ran.
+                skipped.add(provider_ref)
+                logger.warning(
+                    "Import for '%s': skipping folder %r, the provider "
+                    "could not list it: %s",
+                    provider_connection_id,
+                    provider_ref,
+                    error,
+                )
+                continue
             for resource in resources:
                 seen += 1
                 observed.add(resource.id)
@@ -117,6 +162,7 @@ class ImportSyncMixin:
         missing = await self._mark_unseen_missing(
             provider_connection_id,
             observed,
+            skipped=skipped,
         )
         return {
             "imported": imported,
@@ -125,6 +171,7 @@ class ImportSyncMixin:
             "seen": seen,
             "missing": missing,
             "restored": restored,
+            "skipped": len(skipped),
         }
 
     async def _ensure_import_root(
@@ -313,20 +360,26 @@ class ImportSyncMixin:
         self,
         provider_connection_id: str,
         observed: set[str],
+        *,
+        skipped: set[str] | None = None,
     ) -> int:
-        """After a complete walk: index rows not seen this pass become
-        `missing` (still listed in Storage browse) and their linked
-        library files go to trash. Already-missing rows are left alone.
+        """After a walk: index rows not seen this pass become `missing`
+        (still listed in Storage browse) and their linked library files go
+        to trash. Already-missing rows are left alone, and so is anything
+        under a folder in `skipped` (it could not be listed, so its
+        contents are unknown, not gone).
         """
         missing = 0
         indexed = await self._objects.list(
             provider_connection_id=provider_connection_id,
         )
+        parents = {obj.content_reference: obj.provider_parent_ref for obj in indexed}
         for obj in indexed:
             if (
                 obj.content_reference in observed
                 or obj.status == "missing"
                 or is_umedia_managed_reference(obj.content_reference)
+                or (skipped and _under_skipped(obj, parents, skipped))
             ):
                 continue
             await self._objects.update(obj.uid, {"status": "missing"})
