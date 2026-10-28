@@ -10,9 +10,12 @@ provider connection and run the same reconcile as
 `POST /providers/{uid}/sync`. Sequential on purpose (SQLite; one plugin
 walk at a time). A failed provider is logged and skipped so one outage
 cannot abort the tick, then backed off (30 min .. 24 h) so a broken
-connection reports one error event instead of one per tick. Incomplete
-walks never mark objects missing -- `import_from_provider` raises before
-that step (a single unlistable sub-folder is skipped, not fatal).
+connection reports one error event instead of one per tick. Each
+connection walks at most `POLL_WALK_BUDGET_SECONDS` per tick, then
+pauses and resumes on the next tick, so one huge tree cannot starve the
+rest. Incomplete walks never mark objects missing -- `import_from_provider`
+raises before that step, and a paused walk marks nothing until its last
+folder is listed (a single unlistable sub-folder is skipped, not fatal).
 
 Purging is library-only (doc 11's v1 rule -- StorageObjects and the
 provider's bytes always survive), so the purge service is assembled from
@@ -32,6 +35,7 @@ from apps.provider_connections.repository import ProviderConnectionRepository
 from plugins.client import PluginRPCError
 
 from .factory import build_media_file_service_from_state, run_inbound_sync
+from .import_sync import ImportWalk
 from .repository import MediaFileRepository
 from .services import MediaFileService
 from .shared import TRASH_RETENTION_DAYS
@@ -116,6 +120,15 @@ SYNC_RETRY_MAX_SECONDS = 24 * 3600.0
 # an error only once it has failed this many polls in a row.
 TRANSIENT_REPORT_AFTER = 3
 
+# The poll walks connections one after another, so one huge or slow tree
+# (an SFTP home directory: days of listing) used to hold the whole tick
+# and every other connection waited (2026-10-25). Each connection now
+# gets this much walking per tick, then its walk pauses and the next tick
+# resumes it. A paused walk older than POLL_WALK_MAX_AGE_SECONDS starts
+# over, so a long-paused cursor never imports into stale folders.
+POLL_WALK_BUDGET_SECONDS = 300.0
+POLL_WALK_MAX_AGE_SECONDS = 24 * 3600.0
+
 
 class SyncFailure:
     """Backoff bookkeeping for one connection: consecutive failed polls,
@@ -159,6 +172,25 @@ def _note_sync_failure(
     return failure, report
 
 
+def _paused_walks(state: Any) -> dict[str, ImportWalk]:  # noqa: ANN401
+    walks = getattr(state, "paused_walks", None)
+    if walks is None:
+        walks = {}
+        state.paused_walks = walks
+    return walks
+
+
+def _walk_for_tick(walks: dict[str, ImportWalk], connection_uid: str) -> ImportWalk:
+    """The connection's paused walk (with a fresh deadline), or a new one."""
+    now = time.monotonic()
+    walk = walks.get(connection_uid)
+    if walk is None or now - walk.started_at > POLL_WALK_MAX_AGE_SECONDS:
+        walk = ImportWalk(started_at=now)
+        walks[connection_uid] = walk
+    walk.deadline = now + POLL_WALK_BUDGET_SECONDS
+    return walk
+
+
 def _state(app_or_state: Any) -> Any:  # noqa: ANN401
     return getattr(app_or_state, "state", app_or_state)
 
@@ -198,6 +230,7 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
         state.active_syncs = active_syncs
 
     failures = _sync_failures(state)
+    walks = _paused_walks(state)
     connections = ProviderConnectionRepository(state.session_factory)
     files = MediaFileRepository(state.session_factory)
     reconciled = 0
@@ -225,16 +258,33 @@ async def poll_inbound_syncs(app_or_state: Any) -> int:  # noqa: ANN401
                     connection.uid,
                 )
                 continue
-            result = await run_inbound_sync(state, connection.uid, actor_id)
-            schedule_content_hash_backfill(state, connection.uid)
-            logger.info(
-                "Inbound poll sync for '%s' finished: %s",
-                connection.uid,
-                result,
+            walk = _walk_for_tick(walks, connection.uid)
+            result = await run_inbound_sync(
+                state, connection.uid, actor_id, walk=walk,
             )
+            schedule_content_hash_backfill(state, connection.uid)
+            if walk.done:
+                walks.pop(connection.uid, None)
+                logger.info(
+                    "Inbound poll sync for '%s' finished: %s",
+                    connection.uid,
+                    result,
+                )
+            else:
+                logger.info(
+                    "Inbound poll sync for '%s' paused after %ds, %d "
+                    "folder(s) left; the next poll resumes it: %s",
+                    connection.uid,
+                    int(POLL_WALK_BUDGET_SECONDS),
+                    len(walk.stack or ()),
+                    result,
+                )
             failures.pop(connection.uid, None)
             reconciled += 1
         except Exception as error:
+            # Start the next try from the top: a failed pass's progress
+            # may be half-applied.
+            walks.pop(connection.uid, None)
             failure, report = _note_sync_failure(
                 failures, connection.uid, error, time.monotonic(),
             )

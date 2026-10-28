@@ -1,6 +1,8 @@
 """MediaFileService: ImportSync operations (mixed into `MediaFileService`)."""
 
 import logging
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from apps.storage_objects.schemas import StorageObjectRecord
@@ -23,6 +25,53 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Hidden entries (".cargo", ".ssh", ".DS_Store") and dependency or cache
+# folders are not media. An SFTP connection rooted at a home directory
+# imported ~25k toolchain files and its walk (~2.5 s per folder) held the
+# poller for days, so no other connection synced (2026-10-25). They are
+# neither imported nor walked. Rows already indexed under them are left
+# as they are: never marked missing because of this rule.
+IGNORED_FOLDER_NAMES = frozenset({"node_modules", "__pycache__"})
+
+_COUNTERS = ("imported", "updated", "pushed", "seen", "restored", "ignored")
+
+
+def is_ignored_resource(resource: PluginResource) -> bool:
+    """Whether the walk leaves this listed entry alone (see above)."""
+    name = resource.name or resource.id.rsplit("/", 1)[-1]
+    if name.startswith("."):
+        return True
+    return resource.type == "folder" and name in IGNORED_FOLDER_NAMES
+
+
+@dataclass
+class ImportWalk:
+    """Progress of one walk, so the poller can stop it at `deadline`
+    (a `time.monotonic()` value) and resume it on the next tick.
+
+    Objects are marked missing only once the whole tree has been listed,
+    possibly over several ticks; a paused walk never marks anything.
+    """
+
+    deadline: float | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    stack: list[tuple[str | None, str]] | None = None
+    visited: set[str | None] = field(default_factory=set)
+    observed: set[str] = field(default_factory=set)
+    skipped: set[str] = field(default_factory=set)
+    excluded: set[str] = field(default_factory=set)
+    counts: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(_COUNTERS, 0),
+    )
+
+    @property
+    def done(self) -> bool:
+        """True once every folder has been listed."""
+        return self.stack is not None and not self.stack
+
+    def out_of_time(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
 
 
 def _under_skipped(
@@ -67,8 +116,14 @@ class ImportSyncMixin:
         provider_connection_id: str,
         *,
         actor_user_id: str,
+        walk: ImportWalk | None = None,
     ) -> dict[str, int]:
         """Walk the provider, reconcile each object, upsert the index.
+
+        `walk` (the poller's) carries a deadline and the walk's progress:
+        past the deadline the pass stops after the current folder and
+        returns with `pending` > 0; calling again with the same `walk`
+        continues where it stopped. Without it the whole tree is walked.
 
         Per-file policy (explicit Sync):
         - Remote newer (mtime/size): keep prior indexed bytes snapshot on
@@ -89,6 +144,8 @@ class ImportSyncMixin:
           the walk goes on. Objects under a skipped folder are never marked
           missing. Only a failed *root* listing aborts the pass (the
           connection itself is unusable; the poller backs off).
+        - Hidden entries and dependency/cache folders are skipped (see
+          `is_ignored_resource`); counted in `ignored`.
         """
         connection = await self._connections.get(provider_connection_id)
         if connection is None:
@@ -101,20 +158,22 @@ class ImportSyncMixin:
             actor_user_id=actor_user_id,
         )
 
-        imported = 0
-        updated = 0
-        pushed = 0
-        seen = 0
-        restored = 0
-        observed: set[str] = set()
-        skipped: set[str] = set()
-        visited: set[str | None] = set()
-        stack: list[tuple[str | None, str]] = [(None, root.uid)]
+        if walk is None:
+            walk = ImportWalk()
+        if walk.stack is None:
+            walk.stack = [(None, root.uid)]
+        stack = walk.stack
+        listed = 0
         while stack:
+            # Always list at least one folder per call, so a resumed walk
+            # moves forward even when it starts past its deadline.
+            if listed and walk.out_of_time():
+                break
+            listed += 1
             provider_ref, library_parent_uid = stack.pop()
-            if provider_ref in visited:
+            if provider_ref in walk.visited:
                 continue
-            visited.add(provider_ref)
+            walk.visited.add(provider_ref)
             try:
                 resources = await self._plugins.list_resources(
                     provider_connection_id,
@@ -126,7 +185,7 @@ class ImportSyncMixin:
                 # One unreadable folder used to abort the whole walk on
                 # every poll (UMEDIA-4/6): nothing after it was ever
                 # imported and missing-marking never ran.
-                skipped.add(provider_ref)
+                walk.skipped.add(provider_ref)
                 logger.warning(
                     "Import for '%s': skipping folder %r, the provider "
                     "could not list it: %s",
@@ -135,44 +194,70 @@ class ImportSyncMixin:
                     error,
                 )
                 continue
-            for resource in resources:
-                seen += 1
-                observed.add(resource.id)
-                if is_umedia_managed_reference(resource.id):
-                    # Core-owned local dump (per-user upload paths). Keep
-                    # walking so descendants are observed, but never
-                    # import them as library files.
-                    if resource.type == "folder":
-                        stack.append((resource.id, library_parent_uid))
-                    continue
-                media_file, deltas = await self._sync_listed_resource(
-                    provider_connection_id,
-                    resource,
-                    actor_user_id=actor_user_id,
-                    library_parent_uid=library_parent_uid,
-                    mirror=mirror,
-                )
-                imported += deltas["imported"]
-                updated += deltas["updated"]
-                pushed += deltas["pushed"]
-                restored += deltas["restored"]
-                if resource.type == "folder":
-                    stack.append((resource.id, media_file.uid))
+            await self._reconcile_listing(
+                provider_connection_id,
+                resources,
+                walk,
+                actor_user_id=actor_user_id,
+                library_parent_uid=library_parent_uid,
+                mirror=mirror,
+            )
 
-        missing = await self._mark_unseen_missing(
-            provider_connection_id,
-            observed,
-            skipped=skipped,
-        )
+        missing = 0
+        if not stack:
+            missing = await self._mark_unseen_missing(
+                provider_connection_id,
+                walk.observed,
+                skipped=walk.skipped | walk.excluded,
+            )
         return {
-            "imported": imported,
-            "updated": updated,
-            "pushed": pushed,
-            "seen": seen,
+            **walk.counts,
             "missing": missing,
-            "restored": restored,
-            "skipped": len(skipped),
+            "skipped": len(walk.skipped),
+            "pending": len(stack),
         }
+
+    async def _reconcile_listing(
+        self,
+        provider_connection_id: str,
+        resources: list[PluginResource],
+        walk: ImportWalk,
+        *,
+        actor_user_id: str,
+        library_parent_uid: str,
+        mirror: bool,
+    ) -> None:
+        """Reconcile one folder's listed entries; queue sub-folders."""
+        counts = walk.counts
+        stack = walk.stack if walk.stack is not None else []
+        for resource in resources:
+            counts["seen"] += 1
+            walk.observed.add(resource.id)
+            if is_umedia_managed_reference(resource.id):
+                # Core-owned local dump (per-user upload paths). Keep
+                # walking so descendants are observed, but never import
+                # them as library files.
+                if resource.type == "folder":
+                    stack.append((resource.id, library_parent_uid))
+                continue
+            if is_ignored_resource(resource):
+                counts["ignored"] += 1
+                if resource.type == "folder":
+                    # Not listed, so its indexed contents are unknown, not
+                    # gone: keep them out of missing-marking.
+                    walk.excluded.add(resource.id)
+                continue
+            media_file, deltas = await self._sync_listed_resource(
+                provider_connection_id,
+                resource,
+                actor_user_id=actor_user_id,
+                library_parent_uid=library_parent_uid,
+                mirror=mirror,
+            )
+            for key in ("imported", "updated", "pushed", "restored"):
+                counts[key] += deltas[key]
+            if resource.type == "folder":
+                stack.append((resource.id, media_file.uid))
 
     async def _ensure_import_root(
         self,

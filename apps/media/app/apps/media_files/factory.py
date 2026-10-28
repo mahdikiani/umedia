@@ -15,6 +15,7 @@ from apps.user_access_keys.factory import (
 )
 from plugins.client import PluginRPCError
 
+from .import_sync import ImportWalk
 from .notifications import NotificationRepository, NotificationService
 from .plugin_gateway import MediaPluginGateway
 from .repository import MediaFileRepository
@@ -96,18 +97,22 @@ async def run_inbound_sync(
     state: _AppStateProtocol,
     connection_uid: str,
     actor_user_id: str,
+    *,
+    walk: ImportWalk | None = None,
 ) -> dict[str, int]:
     """One reconcile pass for one connection.
 
     Shared by `POST /providers/{uid}/sync` and the interval poller.
     Callers own `active_syncs` add/discard so GET sync status stays
-    accurate for both triggers.
+    accurate for both triggers. The poller passes `walk` to bound the
+    pass in time and resume it later (see `ImportWalk`).
     """
     service = build_media_file_service_from_state(state)
     try:
         result = await service.import_from_provider(
             connection_uid,
             actor_user_id=actor_user_id,
+            walk=walk,
         )
     except PluginRPCError as error:
         await record_sync_health(state, connection_uid, error)
