@@ -12,6 +12,7 @@ Known platform limitations, by design, not oversights:
 """
 
 import asyncio
+import hashlib
 import io
 import logging
 import math
@@ -19,12 +20,13 @@ import time
 import unicodedata
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
 from pyrogram import Client
 from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import (
+    FloodWait,
     PasswordHashInvalid,
     PhoneCodeExpired,
     PhoneCodeInvalid,
@@ -66,35 +68,186 @@ class _TelegramChannelResolutionError(ConnectionFailedError):
     http_status = 422
 
 
-@asynccontextmanager
-async def _connected_client(config: dict[str, Any]) -> AsyncIterator[Client]:
-    """Connect using a Kurigram session string and always stop the client.
+class _TelegramBusyError(ConnectionFailedError):
+    """Telegram asked us to slow down; this session pauses for a while."""
 
-    One connection per call -- simple and stateless (matches every other
-    method in this backend receiving `config` fresh each time), at the
-    cost of reconnecting per request. Pooling connections per connection
-    config is a reasonable later optimization, not correctness-critical;
-    not done here to avoid holding per-config state a plugin process
-    otherwise has no reason to keep.
-    """
-    async with Client(
-        "umedia-telegram",
-        api_id=int(config["api_id"]),
-        api_hash=str(config["api_hash"]),
-        session_string=str(config["session"]),
-        no_updates=True,
-    ) as client:
-        if await client.get_me() is None:
-            raise ConnectionFailedError("Telegram session is not authorized")
-        yield client
+    http_status = 503
 
 
-async def _admin_channel(client: Client, config: dict[str, Any]) -> int:
-    """Return the configured channel after checking the current user's role."""
-    channel_id = int(config["channel_id"])
-    member = await client.get_chat_member(channel_id, "me")
+# One shared client per Telegram session, not one per request. Opening a
+# client (connect + get_me) for every call made ~60 thumbnail requests open
+# ~60 MTProto connections at once; Telegram answered with "Transport flood"
+# and Kurigram reconnected forever, ~10 errors/s for 16 hours (2026-10-25)
+# and again when the poller reached the connection (2026-10-28).
+MAX_CONCURRENT_CALLS = 3
+CONNECT_TIMEOUT_SECONDS = 30.0
+CALL_TIMEOUT_SECONDS = 60.0
+IDLE_CLOSE_SECONDS = 600.0
+ADMIN_CHECK_TTL_SECONDS = 600.0
+# After a timeout (how a transport flood shows up) or a FloodWait shorter
+# than this, the session still pauses this long before reconnecting.
+FLOOD_COOLDOWN_SECONDS = 60.0
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _session_key(config: dict[str, Any]) -> str:
+    raw = f"{config['api_id']}|{config['api_hash']}|{config['session']}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+class _PooledClient:
+    """A started client shared by every call for one session."""
+
+    def __init__(self, client: Client, stack: AsyncExitStack) -> None:
+        self.client = client
+        self.stack = stack
+        self.calls = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+        self.in_use = 0
+        self.last_used = _now()
+        self.admin_channel: int | None = None
+        self.admin_checked_at = 0.0
+
+    async def close(self) -> None:
+        with suppress(Exception):
+            await self.stack.aclose()
+
+
+class _ClientPool:
+    def __init__(self) -> None:
+        self._clients: dict[str, _PooledClient] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._paused_until: dict[str, float] = {}
+
+    def _check_paused(self, key: str) -> None:
+        wait = self._paused_until.get(key, 0.0) - _now()
+        if wait > 0:
+            raise _TelegramBusyError(
+                f"Telegram asked to slow down; retry in {math.ceil(wait)}s",
+            )
+
+    async def _drop(self, key: str, pause_seconds: float) -> None:
+        self._paused_until[key] = _now() + pause_seconds
+        pooled = self._clients.pop(key, None)
+        if pooled is not None:
+            # Stopping the client also ends Kurigram's reconnect loop.
+            await pooled.close()
+
+    async def _open(self, key: str, config: dict[str, Any]) -> _PooledClient:
+        async with self._locks.setdefault(key, asyncio.Lock()):
+            pooled = self._clients.get(key)
+            if pooled is not None:
+                return pooled
+            self._check_paused(key)
+            client = Client(
+                "umedia-telegram",
+                api_id=int(config["api_id"]),
+                api_hash=str(config["api_hash"]),
+                session_string=str(config["session"]),
+                no_updates=True,
+                in_memory=True,
+            )
+            stack = AsyncExitStack()
+            try:
+                await asyncio.wait_for(
+                    stack.enter_async_context(client),
+                    CONNECT_TIMEOUT_SECONDS,
+                )
+                me = await asyncio.wait_for(
+                    client.get_me(), CONNECT_TIMEOUT_SECONDS,
+                )
+            except BaseException:
+                with suppress(Exception):
+                    await stack.aclose()
+                raise
+            if me is None:
+                await stack.aclose()
+                raise ConnectionFailedError("Telegram session is not authorized")
+            pooled = _PooledClient(client, stack)
+            self._clients[key] = pooled
+            return pooled
+
+    @asynccontextmanager
+    async def use(self, config: dict[str, Any]) -> AsyncIterator[_PooledClient]:
+        """Borrow the session's shared client, at most
+        MAX_CONCURRENT_CALLS at a time. A FloodWait or a timeout closes the
+        client and pauses the session, so callers get a fast 503 instead
+        of piling more connections onto Telegram."""
+        key = _session_key(config)
+        self._check_paused(key)
+        try:
+            pooled = await self._open(key, config)
+            async with pooled.calls:
+                self._check_paused(key)
+                pooled.in_use += 1
+                try:
+                    yield pooled
+                finally:
+                    pooled.in_use -= 1
+                    pooled.last_used = _now()
+        except FloodWait as error:
+            wait = max(float(getattr(error, "value", 0) or 0), FLOOD_COOLDOWN_SECONDS)
+            logger.warning("Telegram FloodWait %ss; pausing the session", wait)
+            await self._drop(key, wait)
+            raise _TelegramBusyError(
+                f"Telegram asked to slow down; retry in {math.ceil(wait)}s",
+            ) from error
+        except TimeoutError as error:
+            logger.warning("Telegram call timed out; pausing the session")
+            await self._drop(key, FLOOD_COOLDOWN_SECONDS)
+            raise _TelegramBusyError(
+                "Telegram did not answer in time; retry shortly",
+            ) from error
+
+    async def close_idle(self) -> None:
+        now = _now()
+        for key, pooled in list(self._clients.items()):
+            if pooled.in_use == 0 and now - pooled.last_used > IDLE_CLOSE_SECONDS:
+                self._clients.pop(key, None)
+                await pooled.close()
+
+    async def close_all(self) -> None:
+        clients = list(self._clients.values())
+        self._clients.clear()
+        for pooled in clients:
+            await pooled.close()
+
+
+async def _call(awaitable: Any) -> Any:  # noqa: ANN401
+    """One Telegram request with a deadline (a hung call is a flood sign)."""
+    return await asyncio.wait_for(awaitable, CALL_TIMEOUT_SECONDS)
+
+
+async def _require_admin(client: Client, channel_id: int) -> None:
+    """Fail unless the session's user administers the channel."""
+    member = await _call(client.get_chat_member(channel_id, "me"))
     if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
         raise ConnectionFailedError("Telegram session must administer the channel")
+
+
+async def _admin_channel(
+    pooled: _PooledClient,
+    config: dict[str, Any],
+    *,
+    fresh: bool = False,
+) -> int:
+    """Return the configured channel after checking the current user's
+    role; the answer is reused for ADMIN_CHECK_TTL_SECONDS (`fresh` forces
+    a new check, as `connect()` does)."""
+    channel_id = int(config["channel_id"])
+    now = _now()
+    if (
+        not fresh
+        and pooled.admin_channel == channel_id
+        and now - pooled.admin_checked_at < ADMIN_CHECK_TTL_SECONDS
+    ):
+        return channel_id
+    pooled.admin_channel = None
+    await _require_admin(pooled.client, channel_id)
+    pooled.admin_channel = channel_id
+    pooled.admin_checked_at = now
     return channel_id
 
 
@@ -168,6 +321,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
     def __init__(self) -> None:
         self._login_attempts: dict[str, _LoginAttempt] = {}
         self._login_sweeper: asyncio.Task[None] | None = None
+        self._pool = _ClientPool()
 
     async def startup(self) -> None:
         self._login_sweeper = asyncio.create_task(self._sweep_login_attempts())
@@ -179,6 +333,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
                 await self._login_sweeper
         for login_id in list(self._login_attempts):
             await self.login_cancel(login_id)
+        await self._pool.close_all()
 
     async def _close_login(self, login_id: str) -> None:
         attempt = self._login_attempts.pop(login_id, None)
@@ -198,6 +353,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
             ]
             for login_id in expired:
                 await self._close_login(login_id)
+            await self._pool.close_idle()
 
     def _get_login(self, login_id: str) -> _LoginAttempt:
         attempt = self._login_attempts.get(login_id)
@@ -253,7 +409,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
             raise ConnectionFailedError("Telegram login was not authorized")
         try:
             channel_id = await _resolve_channel(attempt.client, attempt.channel_ref)
-            await _admin_channel(attempt.client, {"channel_id": str(channel_id)})
+            await _require_admin(attempt.client, channel_id)
             session = await attempt.client.export_session_string()
         except Exception:
             await self._close_login(login_id)
@@ -343,8 +499,8 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         await self._close_login(login_id)
 
     async def connect(self, config: dict[str, Any]) -> None:
-        async with _connected_client(config) as client:
-            await _admin_channel(client, config)
+        async with self._pool.use(config) as pooled:
+            await _admin_channel(pooled, config, fresh=True)
 
     async def list_resources(
         self,
@@ -355,25 +511,36 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         if parent_id:
             # Flat namespace: nothing has ever been "inside" another item.
             raise ResourceNotFoundError(parent_id)
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            messages = client.get_chat_history(channel, limit=LIST_LIMIT)
-            return [
-                _to_resource(message)
-                async for message in messages
-                if getattr(message, "document", None)
-            ]
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+
+            async def _collect() -> list[Resource]:
+                messages = pooled.client.get_chat_history(channel, limit=LIST_LIMIT)
+                return [
+                    _to_resource(message)
+                    async for message in messages
+                    if getattr(message, "document", None)
+                ]
+
+            return await _call(_collect())
+
+    async def _document(
+        self,
+        pooled: _PooledClient,
+        channel: int,
+        resource_id: str,
+    ) -> Any:  # noqa: ANN401
+        message = await _call(
+            pooled.client.get_messages(channel, message_ids=int(resource_id)),
+        )
+        if message is None or not getattr(message, "document", None):
+            raise ResourceNotFoundError(resource_id)
+        return message
 
     async def get_resource(self, config: dict[str, Any], resource_id: str) -> Resource:
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            message = await client.get_messages(
-                channel,
-                message_ids=int(resource_id),
-            )
-            if message is None or not getattr(message, "document", None):
-                raise ResourceNotFoundError(resource_id)
-            return _to_resource(message)
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+            return _to_resource(await self._document(pooled, channel, resource_id))
 
     async def read_content(
         self,
@@ -382,14 +549,9 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         *,
         range_header: str | None,
     ) -> AsyncIterator[bytes]:
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            message = await client.get_messages(
-                channel,
-                message_ids=int(resource_id),
-            )
-            if message is None or not getattr(message, "document", None):
-                raise ResourceNotFoundError(resource_id)
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+            message = await self._document(pooled, channel, resource_id)
             offset, limit = _parse_range(range_header)
             chunk_offset = offset // CHUNK_SIZE
             chunk_skip = offset % CHUNK_SIZE
@@ -397,7 +559,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
                 math.ceil((chunk_skip + limit) / CHUNK_SIZE) if limit is not None else 0
             )
             remaining = limit
-            async for chunk in client.stream_media(
+            async for chunk in pooled.client.stream_media(
                 message,
                 offset=chunk_offset,
                 limit=chunk_limit,
@@ -424,9 +586,9 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
                 "Telegram channels do not support folders",
             )
         body = b"".join([chunk async for chunk in content])
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            message = await client.send_document(
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+            message = await pooled.client.send_document(
                 channel,
                 document=io.BytesIO(body),
                 file_name=metadata.name,
@@ -442,14 +604,9 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         *,
         content: AsyncIterator[bytes] | None,
     ) -> Resource:
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            message = await client.get_messages(
-                channel,
-                message_ids=int(resource_id),
-            )
-            if message is None or not getattr(message, "document", None):
-                raise ResourceNotFoundError(resource_id)
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+            message = await self._document(pooled, channel, resource_id)
 
             new_name = changes.name or _filename(message)
             if content is not None:
@@ -458,12 +615,12 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
                 # No in-place rename (see module docstring): re-upload the
                 # existing bytes under the new name.
                 buffer = io.BytesIO()
-                async for chunk in client.stream_media(message):
+                async for chunk in pooled.client.stream_media(message):
                     buffer.write(chunk)
                 body = buffer.getvalue()
 
-            await client.delete_messages(channel, [message.id])
-            new_message = await client.send_document(
+            await _call(pooled.client.delete_messages(channel, [message.id]))
+            new_message = await pooled.client.send_document(
                 channel,
                 document=io.BytesIO(body),
                 file_name=new_name,
@@ -472,12 +629,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
             return _to_resource(new_message)
 
     async def delete_resource(self, config: dict[str, Any], resource_id: str) -> None:
-        async with _connected_client(config) as client:
-            channel = await _admin_channel(client, config)
-            message = await client.get_messages(
-                channel,
-                message_ids=int(resource_id),
-            )
-            if message is None or not getattr(message, "document", None):
-                raise ResourceNotFoundError(resource_id)
-            await client.delete_messages(channel, [message.id])
+        async with self._pool.use(config) as pooled:
+            channel = await _admin_channel(pooled, config)
+            message = await self._document(pooled, channel, resource_id)
+            await _call(pooled.client.delete_messages(channel, [message.id]))

@@ -186,9 +186,14 @@ def _patched(client: FakeTelegramClient) -> ExitStack:
 @pytest.mark.asyncio
 async def test_connect_succeeds_when_authorized_and_admin() -> None:
     client = FakeTelegramClient()
+    backend = TelegramBackend()
     with _patched(client):
-        await TelegramBackend().connect(CONFIG)
-    assert client.connected is False  # always disconnected after the call
+        await backend.connect(CONFIG)
+        # The session's client is shared and stays open between calls...
+        assert client.connected is True
+        await backend.shutdown()
+    # ...and is closed when the plugin stops.
+    assert client.connected is False
 
 
 @pytest.mark.asyncio
