@@ -229,6 +229,7 @@ async def _two_connections(harness: Harness) -> tuple[str, str]:
     uids = []
     for name in ("slow-home", "drive"):
         created = await repo.create({
+            "owner_id": ACTOR_ID,
             "provider_type": "local",
             "name": name,
             "encrypted_config": "x",
