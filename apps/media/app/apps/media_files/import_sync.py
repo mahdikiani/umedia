@@ -162,9 +162,6 @@ class ImportSyncMixin:
             walk = ImportWalk()
         if walk.stack is None:
             walk.stack = [(None, root.uid)]
-        counts = walk.counts
-        observed = walk.observed
-        skipped = walk.skipped
         stack = walk.stack
         listed = 0
         while stack:
@@ -188,7 +185,7 @@ class ImportSyncMixin:
                 # One unreadable folder used to abort the whole walk on
                 # every poll (UMEDIA-4/6): nothing after it was ever
                 # imported and missing-marking never ran.
-                skipped.add(provider_ref)
+                walk.skipped.add(provider_ref)
                 logger.warning(
                     "Import for '%s': skipping folder %r, the provider "
                     "could not list it: %s",
@@ -197,48 +194,70 @@ class ImportSyncMixin:
                     error,
                 )
                 continue
-            for resource in resources:
-                counts["seen"] += 1
-                observed.add(resource.id)
-                if is_umedia_managed_reference(resource.id):
-                    # Core-owned local dump (per-user upload paths). Keep
-                    # walking so descendants are observed, but never
-                    # import them as library files.
-                    if resource.type == "folder":
-                        stack.append((resource.id, library_parent_uid))
-                    continue
-                if is_ignored_resource(resource):
-                    counts["ignored"] += 1
-                    if resource.type == "folder":
-                        # Not listed, so its indexed contents are unknown,
-                        # not gone: keep them out of missing-marking.
-                        walk.excluded.add(resource.id)
-                    continue
-                media_file, deltas = await self._sync_listed_resource(
-                    provider_connection_id,
-                    resource,
-                    actor_user_id=actor_user_id,
-                    library_parent_uid=library_parent_uid,
-                    mirror=mirror,
-                )
-                for key in ("imported", "updated", "pushed", "restored"):
-                    counts[key] += deltas[key]
-                if resource.type == "folder":
-                    stack.append((resource.id, media_file.uid))
+            await self._reconcile_listing(
+                provider_connection_id,
+                resources,
+                walk,
+                actor_user_id=actor_user_id,
+                library_parent_uid=library_parent_uid,
+                mirror=mirror,
+            )
 
         missing = 0
         if not stack:
             missing = await self._mark_unseen_missing(
                 provider_connection_id,
-                observed,
-                skipped=skipped | walk.excluded,
+                walk.observed,
+                skipped=walk.skipped | walk.excluded,
             )
         return {
-            **counts,
+            **walk.counts,
             "missing": missing,
-            "skipped": len(skipped),
+            "skipped": len(walk.skipped),
             "pending": len(stack),
         }
+
+    async def _reconcile_listing(
+        self,
+        provider_connection_id: str,
+        resources: list[PluginResource],
+        walk: ImportWalk,
+        *,
+        actor_user_id: str,
+        library_parent_uid: str,
+        mirror: bool,
+    ) -> None:
+        """Reconcile one folder's listed entries; queue sub-folders."""
+        counts = walk.counts
+        stack = walk.stack if walk.stack is not None else []
+        for resource in resources:
+            counts["seen"] += 1
+            walk.observed.add(resource.id)
+            if is_umedia_managed_reference(resource.id):
+                # Core-owned local dump (per-user upload paths). Keep
+                # walking so descendants are observed, but never import
+                # them as library files.
+                if resource.type == "folder":
+                    stack.append((resource.id, library_parent_uid))
+                continue
+            if is_ignored_resource(resource):
+                counts["ignored"] += 1
+                if resource.type == "folder":
+                    # Not listed, so its indexed contents are unknown, not
+                    # gone: keep them out of missing-marking.
+                    walk.excluded.add(resource.id)
+                continue
+            media_file, deltas = await self._sync_listed_resource(
+                provider_connection_id,
+                resource,
+                actor_user_id=actor_user_id,
+                library_parent_uid=library_parent_uid,
+                mirror=mirror,
+            )
+            for key in ("imported", "updated", "pushed", "restored"):
+                counts[key] += deltas[key]
+            if resource.type == "folder":
+                stack.append((resource.id, media_file.uid))
 
     async def _ensure_import_root(
         self,
