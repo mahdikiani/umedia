@@ -209,7 +209,9 @@ async def _persist_connection(harness: Harness) -> ProviderConnection:
 
 
 def _service(error: Exception | None) -> SimpleNamespace:
-    async def _import(_uid: str, *, actor_user_id: str) -> dict[str, int]:  # noqa: RUF029
+    async def _import(  # noqa: RUF029
+        _uid: str, *, actor_user_id: str, **_kwargs: object,
+    ) -> dict[str, int]:
         del actor_user_id
         if error is not None:
             raise error
@@ -302,7 +304,7 @@ def _poll_setup(
     calls: list[str] = []
 
     async def _fake_run(  # noqa: RUF029
-        _state: object, connection_uid: str, _actor: str,
+        _state: object, connection_uid: str, _actor: str, **_kwargs: object,
     ) -> dict[str, Any]:
         calls.append(connection_uid)
         outcome = outcomes.pop(0)
