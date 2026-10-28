@@ -220,6 +220,13 @@ async def _call(awaitable: Any) -> Any:  # noqa: ANN401
     return await asyncio.wait_for(awaitable, CALL_TIMEOUT_SECONDS)
 
 
+async def _require_admin(client: Client, channel_id: int) -> None:
+    """Fail unless the session's user administers the channel."""
+    member = await _call(client.get_chat_member(channel_id, "me"))
+    if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+        raise ConnectionFailedError("Telegram session must administer the channel")
+
+
 async def _admin_channel(
     pooled: _PooledClient,
     config: dict[str, Any],
@@ -237,10 +244,8 @@ async def _admin_channel(
         and now - pooled.admin_checked_at < ADMIN_CHECK_TTL_SECONDS
     ):
         return channel_id
-    member = await _call(pooled.client.get_chat_member(channel_id, "me"))
-    if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-        pooled.admin_channel = None
-        raise ConnectionFailedError("Telegram session must administer the channel")
+    pooled.admin_channel = None
+    await _require_admin(pooled.client, channel_id)
     pooled.admin_channel = channel_id
     pooled.admin_checked_at = now
     return channel_id
@@ -404,7 +409,7 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
             raise ConnectionFailedError("Telegram login was not authorized")
         try:
             channel_id = await _resolve_channel(attempt.client, attempt.channel_ref)
-            await _admin_channel(attempt.client, {"channel_id": str(channel_id)})
+            await _require_admin(attempt.client, channel_id)
             session = await attempt.client.export_session_string()
         except Exception:
             await self._close_login(login_id)
