@@ -18,7 +18,8 @@ UI / S3 gateway / share link
      local disk / S3 / Drive / Telegram
 ```
 
-The S3-compatible gateway on this product is **not** a storage provider.
+The S3-compatible gateway (and the WebDAV one, `docs/13-webdav.md`) on this
+product is **not** a storage provider.
 It is a protocol adapter over MediaFile. Object keys are the library path
 (with ` (2)` suffixes on collisions), not `{uid}/{filename}` and not the
 provider path.
