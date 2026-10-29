@@ -113,6 +113,15 @@ services:
       - "traefik.http.routers.umedia-media-preview-vhost-secure.tls.domains[0].sans=*.umedia.uln.me"
       - traefik.http.routers.umedia-media-preview-vhost-secure.priority=10
       - traefik.http.services.umedia-media-preview.loadbalancer.server.port=8000
+      # WebDAV gateway (docs/13-webdav.md): /dav goes to the backend, not the web app.
+      - traefik.http.routers.umedia-dav.rule=Host(`umedia.uln.me`) && PathPrefix(`/dav`)
+      - traefik.http.routers.umedia-dav.entrypoints=web
+      - traefik.http.routers.umedia-dav.priority=30
+      - traefik.http.routers.umedia-dav-secure.rule=Host(`umedia.uln.me`) && PathPrefix(`/dav`)
+      - traefik.http.routers.umedia-dav-secure.entrypoints=websecure
+      - traefik.http.routers.umedia-dav-secure.tls=true
+      - traefik.http.routers.umedia-dav-secure.tls.certresolver=letsencrypt
+      - traefik.http.routers.umedia-dav-secure.priority=30
 
   web:
     build:
