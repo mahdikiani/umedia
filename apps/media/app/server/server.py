@@ -42,6 +42,7 @@ from apps.user_access_keys.factory import (
     build_user_access_key_service_from_state,
 )
 from apps.user_access_keys.routes import router as access_keys_router
+from apps.webdav.routes import router as webdav_router
 from plugins.process_manager import PluginProcessManager, PluginStartError
 from plugins.registry import PluginRegistry
 from utils.crypto import CredentialCipher
@@ -260,6 +261,10 @@ server_router.include_router(
 app.include_router(server_router, prefix=config.Settings.base_path)
 # Cyberduck lists at `GET /` on the website hostname (no `/api/v1/s3`).
 app.include_router(s3_root_router)
+# WebDAV carries its own auth (Basic access key / Bearer) like the S3
+# gateway, and lives outside `base_path` so a shared domain can route it
+# on its own prefix (UMEDIA_WEBDAV_PREFIX).
+app.include_router(webdav_router, prefix=config.Settings.WEBDAV_PREFIX)
 
 # MIME icons copied from ice/media/statics into this process. Served here
 # so the UI never depends on an external host.

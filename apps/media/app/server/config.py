@@ -172,6 +172,23 @@ class Settings(config.Settings):
         os.getenv("S3_COMPAT_PRESIGNED_EXPIRY", "3600"),
     )
 
+    # WebDAV gateway (apps/webdav). The prefix is a route prefix, not a
+    # `base_path` child, so a deployment sharing one domain can move it
+    # (`UMEDIA_WEBDAV_PREFIX=/files-dav`) without touching the API.
+    WEBDAV_ENABLED: bool = os.getenv(
+        "UMEDIA_WEBDAV_ENABLED",
+        "true",
+    ).lower() in {"1", "true", "yes"}
+    WEBDAV_PREFIX: str = "/" + os.getenv("UMEDIA_WEBDAV_PREFIX", "/dav").strip("/")
+    # PUT bodies are staged on disk (like tus) and handed to the plugin as
+    # bytes, so this bounds both disk and the final in-memory read.
+    WEBDAV_MAX_UPLOAD_BYTES: int = int(
+        os.getenv("UMEDIA_WEBDAV_MAX_UPLOAD_BYTES", str(2 * 1024**3)),
+    )
+    WEBDAV_LOCK_TIMEOUT_SECONDS: int = int(
+        os.getenv("UMEDIA_WEBDAV_LOCK_TIMEOUT_SECONDS", "3600"),
+    )
+
     # Local Storage Configuration
     LOCAL_STORAGE_PATH: str = os.getenv("LOCAL_STORAGE_PATH", "./storage")
     LOCAL_STORAGE_BASE_URL: str = os.getenv("LOCAL_STORAGE_BASE_URL")
