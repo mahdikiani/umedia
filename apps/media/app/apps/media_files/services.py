@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from apps.storage_objects.schemas import StorageObjectRecord
+from plugins.client import PluginRPCError
 from plugins.contracts import CreateResourceIn, ResourceNotFoundError, UpdateResourceIn
 from plugins.contracts import Resource as PluginResource
 from utils.pagination import Page
@@ -1066,6 +1067,26 @@ class MediaFileService(
                             range_header=None,
                         ),
                     )
+                except PluginRPCError as error:
+                    failed += 1
+                    attempts = _note_hash_failure(item.uid, time.monotonic())
+                    if error.status_code == 404:
+                        # The provider lists it but will not serve it: an
+                        # expected condition, so a warning, not an error event.
+                        if attempts == 1:
+                            logging.warning(
+                                "Content hash skipped, %s is not readable on "
+                                "connection %s",
+                                item.content_reference,
+                                provider_connection_id,
+                            )
+                    elif attempts == 1:
+                        logging.exception(
+                            "Content hash failed for %s on connection %s",
+                            item.content_reference,
+                            provider_connection_id,
+                        )
+                    continue
                 except Exception:
                     failed += 1
                     attempts = _note_hash_failure(item.uid, time.monotonic())

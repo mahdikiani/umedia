@@ -340,3 +340,32 @@ def test_build_fs_dispatches_on_remote_type() -> None:
 def test_build_fs_rejects_an_unknown_remote_type() -> None:
     with pytest.raises(ConnectionFailedError, match="Unsupported"):
         _build_fs({"remote_type": "not-a-real-backend"})
+
+
+@pytest.mark.asyncio
+async def test_list_drops_dangling_drive_shortcuts() -> None:
+    backend = RcloneBackend()
+    items = [
+        {"Path": "a", "Name": "a", "Size": 1, "IsDir": False, "MimeType": "text/plain"},
+        {
+            "Path": "gone", "Name": "gone", "Size": 0, "IsDir": False,
+            "MimeType": "application/vnd.google-apps.shortcut.dangling",
+        },
+    ]
+    with (
+        patch("plugins.rclone.backend._build_fs", return_value="remote:"),
+        patch.object(backend, "_rc_call", AsyncMock(return_value={"list": items})),
+    ):
+        result = await backend.list_resources({"remote_type": "drive"}, parent_id=None)
+
+    assert [r.id for r in result] == ["a"]
+
+
+def test_sftp_remote_skips_symlinks() -> None:
+    from plugins.rclone.backend import _build_fs
+
+    fs = _build_fs({
+        "remote_type": "sftp", "host": "h", "user": "u", "password": "p",
+        "host_key": HOST_KEY,
+    })
+    assert _param(fs, "skip_links") == "true"

@@ -140,8 +140,15 @@ async def test_rows_already_indexed_under_hidden_folders_are_kept(
         CONNECTION_ID, actor_user_id=ACTOR_ID,
     )
 
-    assert result["missing"] == 0
-    assert await _statuses(harness) == before
+    # Tool caches (`junk.py`) leave the index; every other hidden or
+    # ignored row stays exactly as it was.
+    after = await _statuses(harness)
+    assert after["projects/node_modules/x.js"] == "missing"
+    assert after["projects/node_modules"] == "missing"
+    for ref in ("projects/node_modules", "projects/node_modules/x.js"):
+        after[ref] = before[ref]
+    assert after == before
+    assert result["missing"] == 2  # the folder and the file under it
 
 
 # ----------------------------------------------------------------------

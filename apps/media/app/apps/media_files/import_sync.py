@@ -15,6 +15,7 @@ from .errors import (
     MediaFileValidationError,
 )
 from .hashing import pick_native_hash
+from .junk import is_junk_folder
 from .provider_layout import (
     is_umedia_managed_reference,
 )
@@ -243,9 +244,14 @@ class ImportSyncMixin:
             if is_ignored_resource(resource):
                 counts["ignored"] += 1
                 if resource.type == "folder":
-                    # Not listed, so its indexed contents are unknown, not
-                    # gone: keep them out of missing-marking.
-                    walk.excluded.add(resource.id)
+                    if is_junk_folder(resource.id, resource.name):
+                        # Tool caches (`junk.py`) leave the index, the
+                        # folder row included.
+                        walk.observed.discard(resource.id)
+                    else:
+                        # Not listed, so its indexed contents are unknown,
+                        # not gone: keep them out of missing-marking.
+                        walk.excluded.add(resource.id)
                 continue
             media_file, deltas = await self._sync_listed_resource(
                 provider_connection_id,

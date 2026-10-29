@@ -58,7 +58,7 @@ def live_port(client: httpx.AsyncClient) -> Iterator[int]:
 
 def _obscure(secret: str) -> str:
     return subprocess.run(  # noqa: S603
-        [RCLONE, "obscure", secret],
+        [RCLONE, "obscure", "--", secret],
         check=True,
         capture_output=True,
         text=True,

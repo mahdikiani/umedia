@@ -53,6 +53,10 @@ READ_CHUNK_SIZE = 64 * 1024
 # provider stores it). sftp/ftp/webdav are left out on purpose: rclone would
 # either have none or compute it with a remote command or a full download,
 # which is exactly the work this avoids.
+# Entries a provider lists but can never serve: a Drive shortcut whose target
+# was deleted has size 0 and 404s on read.
+UNREADABLE_MIME_TYPES = frozenset({"application/vnd.google-apps.shortcut.dangling"})
+
 NATIVE_HASH_REMOTES = frozenset({"s3", "google_drive", "dropbox", "onedrive"})
 
 
@@ -269,6 +273,9 @@ def _sftp_fs(config: dict[str, Any]) -> str:
             _obscure(config["key_passphrase"]) if config.get("key_passphrase") else None
         ),
         "host_keys": ",".join(_pinned_host_keys(config)),
+        # rclone lists symlinks but `cat`/`stat` on them fail ("directory not
+        # found"), so they could never be read or hashed (UMEDIA-8).
+        "skip_links": "true",
     }
     return f":sftp,{_params(params)}:{_root(config)}"
 
@@ -615,7 +622,11 @@ class RcloneBackend(PluginBackend):
         result = await self._rc_call(
             "/operations/list", params, http_timeout=RC_LIST_TIMEOUT_SECONDS,
         )
-        return [self._to_resource(item) for item in result.get("list", [])]
+        return [
+            self._to_resource(item)
+            for item in result.get("list", [])
+            if item.get("MimeType") not in UNREADABLE_MIME_TYPES
+        ]
 
     async def get_resource(self, config: dict[str, Any], resource_id: str) -> Resource:
         fs = _build_fs(config)
