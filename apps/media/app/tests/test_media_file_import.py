@@ -362,3 +362,48 @@ async def test_import_does_not_ingest_or_missing_mark_user_dumps(
         assert not listed.is_deleted
     finally:
         await harness.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rows_under_tool_cache_folders_leave_the_index(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.media_files import import_sync
+
+    listing = {
+        None: [
+            PluginResource(id="src", type="folder", name="src", parent_id=None),
+            PluginResource(
+                id="node_modules", type="folder", name="node_modules",
+                parent_id=None,
+            ),
+            PluginResource(id=".ssh", type="folder", name=".ssh", parent_id=None),
+        ],
+        "src": [
+            PluginResource(
+                id="src/a.txt", type="file", name="a.txt", parent_id="src", size=1,
+            ),
+        ],
+        "node_modules": [
+            PluginResource(
+                id="node_modules/x.js", type="file", name="x.js",
+                parent_id="node_modules", size=1,
+            ),
+        ],
+        ".ssh": [
+            PluginResource(id=".ssh/k", type="file", name="k", parent_id=".ssh", size=1),
+        ],
+    }
+    harness.plugins.listings[CONNECTION_ID] = listing
+    # Index everything the way the code did before the ignore rule.
+    monkeypatch.setattr(import_sync, "is_ignored_resource", lambda _r: False)
+    await harness.service.import_from_provider(CONNECTION_ID, actor_user_id=ACTOR_ID)
+    monkeypatch.undo()
+
+    await harness.service.import_from_provider(CONNECTION_ID, actor_user_id=ACTOR_ID)
+
+    objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
+    status = {o.content_reference: o.status for o in objects}
+    assert status["node_modules/x.js"] == "missing"
+    assert status["src/a.txt"] == "active"
+    assert status[".ssh/k"] == "active"  # hidden but not a tool cache: kept
