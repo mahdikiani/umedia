@@ -32,6 +32,14 @@ class PluginStartError(RuntimeError):
     """Raised when a plugin process never becomes healthy after spawning."""
 
 
+class PluginUnhealthyError(PluginStartError):
+    """The plugin ran but did not answer `/health` in time.
+
+    Often temporary (a loaded host, a slow first import), so it is worth
+    retrying -- unlike a bad socket path, which fails the same way forever.
+    """
+
+
 @dataclass
 class _PluginProcess:
     plugin_id: str
@@ -106,6 +114,9 @@ class PluginProcessManager:
         self._socket_dir = socket_dir
         self._socket_dir.mkdir(parents=True, exist_ok=True)
         self._plugins: dict[str, _PluginProcess] = {}
+        # Plugins whose start timed out and are being retried in the
+        # background (see `retry_in_background`).
+        self._retry_tasks: dict[str, asyncio.Task] = {}
 
     def socket_path(self, plugin_id: str) -> Path:
         """Where this plugin's Unix socket will be (or is)."""
@@ -171,8 +182,8 @@ class PluginProcessManager:
             async with asyncio.timeout(healthy_timeout):
                 await self._wait_until_healthy(socket_path)
         except TimeoutError as error:
-            await self.stop(plugin_id)
-            raise PluginStartError(
+            await self._stop_process(plugin_id)
+            raise PluginUnhealthyError(
                 f"Plugin '{plugin_id}' did not become healthy within "
                 f"{healthy_timeout}s",
             ) from error
@@ -279,9 +290,82 @@ class PluginProcessManager:
         except httpx.HTTPError:
             return False
 
+    def retry_in_background(
+        self,
+        plugin_id: str,
+        command: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        healthy_timeout: float = 10.0,
+    ) -> None:
+        """Keep calling `start()` with backoff until the plugin is healthy.
+
+        For a plugin whose first start timed out: the app keeps serving
+        without it, and it comes up on its own once the host calms down,
+        instead of staying down until the next container restart.
+        """
+        if plugin_id in self._plugins or plugin_id in self._retry_tasks:
+            return
+        self._retry_tasks[plugin_id] = asyncio.create_task(
+            self._retry_start(plugin_id, command, env, healthy_timeout),
+        )
+
+    async def _retry_start(
+        self,
+        plugin_id: str,
+        command: list[str],
+        env: dict[str, str] | None,
+        healthy_timeout: float,
+    ) -> None:
+        attempt = 0
+        try:
+            while True:
+                delay = min(
+                    RESTART_BACKOFF_BASE_SECONDS * (2**attempt),
+                    RESTART_BACKOFF_MAX_SECONDS,
+                )
+                attempt += 1
+                await asyncio.sleep(delay)
+                if plugin_id in self._plugins:
+                    return  # started some other way meanwhile
+                try:
+                    await self.start(
+                        plugin_id,
+                        command,
+                        env=env,
+                        healthy_timeout=healthy_timeout,
+                    )
+                except PluginUnhealthyError:
+                    logger.warning(
+                        "Plugin '%s' still not healthy (retry %d); trying again",
+                        plugin_id,
+                        attempt,
+                    )
+                    continue
+                except PluginStartError:
+                    logger.exception("Plugin '%s' cannot start; not retrying", plugin_id)
+                    return
+                logger.info("Plugin '%s' started after %d retries", plugin_id, attempt)
+                return
+        finally:
+            self._retry_tasks.pop(plugin_id, None)
+
+    async def _cancel_retry(self, plugin_id: str) -> None:
+        task = self._retry_tasks.pop(plugin_id, None)
+        if task is None or task is asyncio.current_task():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     async def stop(self, plugin_id: str) -> None:
         """Stop a plugin gracefully (SIGTERM, then SIGKILL after a grace
-        period) and clean up its socket. No-op if it isn't running."""
+        period) and clean up its socket. Also cancels a pending start
+        retry. No-op if it isn't running."""
+        await self._cancel_retry(plugin_id)
+        await self._stop_process(plugin_id)
+
+    async def _stop_process(self, plugin_id: str) -> None:
         entry = self._plugins.pop(plugin_id, None)
         if entry is None:
             return
@@ -309,5 +393,7 @@ class PluginProcessManager:
 
     async def stop_all(self) -> None:
         """Stop every running plugin -- called from the app's shutdown."""
+        for plugin_id in list(self._retry_tasks):
+            await self._cancel_retry(plugin_id)
         for plugin_id in list(self._plugins):
             await self.stop(plugin_id)

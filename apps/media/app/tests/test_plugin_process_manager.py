@@ -4,6 +4,7 @@ Written before plugins/process_manager.py exists, per
 docs/08-implementation-plan.md's TDD process.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ import pytest_asyncio
 from plugins.process_manager import (
     PluginProcessManager,
     PluginStartError,
+    PluginUnhealthyError,
     _minimal_env,
 )
 
@@ -203,3 +205,64 @@ async def test_stop_all_stops_every_plugin(manager: PluginProcessManager) -> Non
     await manager.stop_all()
 
     assert manager.running_plugin_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_timed_out_start_raises_the_retryable_error(
+    manager: PluginProcessManager,
+) -> None:
+    with pytest.raises(PluginUnhealthyError):
+        await manager.start(
+            "never-healthy",
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            healthy_timeout=0.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_retry_brings_up_a_plugin_whose_first_start_timed_out(
+    manager: PluginProcessManager,
+    tmp_path: Path,
+) -> None:
+    """2026-10-30: on a loaded host the telegram plugin missed its 10 s
+    health deadline once at boot and then stayed down until a restart."""
+    command = [*_command(), f"--slow-once={tmp_path / 'slow-marker'}"]
+    with pytest.raises(PluginUnhealthyError):
+        await manager.start("slow", command, healthy_timeout=0.5)
+
+    manager.retry_in_background("slow", command, healthy_timeout=2.0)
+
+    for _ in range(100):
+        if await manager.is_healthy("slow"):
+            break
+        await asyncio.sleep(0.05)
+    assert await manager.is_healthy("slow") is True
+    assert manager.running_plugin_ids() == ["slow"]
+
+
+@pytest.mark.asyncio
+async def test_stop_all_cancels_a_pending_retry(manager: PluginProcessManager) -> None:
+    manager.retry_in_background(
+        "never-healthy",
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        healthy_timeout=0.5,
+    )
+
+    await manager.stop_all()
+    await asyncio.sleep(1.5)  # past the first retry delay
+
+    assert manager.running_plugin_ids() == []
+
+
+@pytest.mark.asyncio
+async def test_retry_gives_up_on_a_permanent_start_error(tmp_path: Path) -> None:
+    deeply_nested = tmp_path
+    for segment in range(10):
+        deeply_nested = deeply_nested / f"a-fairly-long-segment-name-{segment}"
+    manager = PluginProcessManager(deeply_nested)
+
+    manager.retry_in_background("telegram", _command(), healthy_timeout=0.5)
+    await asyncio.sleep(1.5)
+
+    assert manager.running_plugin_ids() == []
+    assert manager._retry_tasks == {}
