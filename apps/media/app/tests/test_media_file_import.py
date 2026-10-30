@@ -428,6 +428,7 @@ def test_junk_below_a_hidden_folder_is_recognised() -> None:
 
     assert is_under_junk(".opencode/node_modules/.bin/yaml")
     assert is_under_junk(".kube/cache/http/abc")
+    assert is_under_junk(".cache/paru/clone/byobu/LICENSES/0BSD.txt")
     assert is_under_junk("node_modules/x.js")
     assert not is_under_junk(".ssh/id_ed25519")
     assert not is_under_junk("node_modules")  # a file named like the folder
