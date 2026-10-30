@@ -452,9 +452,15 @@ async def test_connect_with_import_existing_runs_the_import(
             break
     assert root is not None, "import task never produced the connection root"
 
-    children = (
-        await client.get("/files", params={"parent_id": root["uid"]})
-    ).json()["items"]
+    # The root row lands before its children do; wait for them too.
+    children: list[dict] = []
+    for _ in range(100):
+        children = (
+            await client.get("/files", params={"parent_id": root["uid"]})
+        ).json()["items"]
+        if children:
+            break
+        await asyncio.sleep(0.05)
     assert [item["name"] for item in children] == ["already-there.txt"]
 
 

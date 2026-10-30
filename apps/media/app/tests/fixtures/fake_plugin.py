@@ -19,6 +19,7 @@ import asyncio
 import os
 import sys
 from asyncio import IncompleteReadError, StreamReader, StreamWriter
+from pathlib import Path
 
 
 async def _handle(reader: StreamReader, writer: StreamWriter) -> None:
@@ -60,7 +61,7 @@ async def main() -> None:
             # the marker file makes every later run start normally.
             marker = arg.split("=", 1)[1]
             if not os.path.exists(marker):
-                open(marker, "w").close()
+                await asyncio.to_thread(Path(marker).touch)
                 await asyncio.sleep(60)
 
     if os.path.exists(socket_path):

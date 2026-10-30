@@ -343,7 +343,9 @@ class PluginProcessManager:
                     )
                     continue
                 except PluginStartError:
-                    logger.exception("Plugin '%s' cannot start; not retrying", plugin_id)
+                    logger.exception(
+                        "Plugin '%s' cannot start; not retrying", plugin_id
+                    )
                     return
                 logger.info("Plugin '%s' started after %d retries", plugin_id, attempt)
                 return
