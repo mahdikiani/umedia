@@ -5,7 +5,7 @@ The import walk already skips hidden and dependency folders
 ones that should also leave the index: rows under them become `missing`.
 Index only; the provider's files are never touched."""
 
-JUNK_FOLDER_NAMES = frozenset({"node_modules", ".oh-my-zsh", ".antigen"})
+JUNK_FOLDER_NAMES = frozenset({"node_modules", ".oh-my-zsh", ".antigen", ".cache"})
 JUNK_FOLDER_PATHS = frozenset({".kube/cache"})
 
 
