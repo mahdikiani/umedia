@@ -15,7 +15,7 @@ from .errors import (
     MediaFileValidationError,
 )
 from .hashing import pick_native_hash
-from .junk import is_junk_folder
+from .junk import is_junk_folder, is_under_junk
 from .provider_layout import (
     is_umedia_managed_reference,
 )
@@ -470,7 +470,13 @@ class ImportSyncMixin:
                 obj.content_reference in observed
                 or obj.status == "missing"
                 or is_umedia_managed_reference(obj.content_reference)
-                or (skipped and _under_skipped(obj, parents, skipped))
+                or (
+                    skipped
+                    and _under_skipped(obj, parents, skipped)
+                    # Tool caches leave the index even below a hidden
+                    # folder the walk does not enter.
+                    and not is_under_junk(obj.content_reference)
+                )
             ):
                 continue
             await self._objects.update(obj.uid, {"status": "missing"})
