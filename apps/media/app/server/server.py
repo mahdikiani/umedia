@@ -51,7 +51,7 @@ from plugins.process_manager import (
 from plugins.registry import PluginRegistry
 from utils.crypto import CredentialCipher
 
-from . import config
+from . import config, monitoring
 from .database import create_engine, create_session_factory
 
 
@@ -228,6 +228,7 @@ app = app_factory.create_app(
     index_route=False,
 )
 app.middleware("http")(jwt_guard)
+monitoring.install()
 
 # Off by default: with allow_credentials=True a wildcard-subdomain regex lets
 # every sibling host send credentialed requests. Opt in per deployment.
