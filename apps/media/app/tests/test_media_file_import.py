@@ -378,6 +378,19 @@ async def test_rows_under_tool_cache_folders_leave_the_index(
                 parent_id=None,
             ),
             PluginResource(id=".ssh", type="folder", name=".ssh", parent_id=None),
+            PluginResource(id=".oc", type="folder", name=".oc", parent_id=None),
+        ],
+        ".oc": [
+            PluginResource(
+                id=".oc/node_modules", type="folder", name="node_modules",
+                parent_id=".oc",
+            ),
+        ],
+        ".oc/node_modules": [
+            PluginResource(
+                id=".oc/node_modules/y.js", type="file", name="y.js",
+                parent_id=".oc/node_modules", size=1,
+            ),
         ],
         "src": [
             PluginResource(
@@ -405,5 +418,17 @@ async def test_rows_under_tool_cache_folders_leave_the_index(
     objects = await harness.objects.list(provider_connection_id=CONNECTION_ID)
     status = {o.content_reference: o.status for o in objects}
     assert status["node_modules/x.js"] == "missing"
+    assert status[".oc/node_modules/y.js"] == "missing"  # below a hidden folder
     assert status["src/a.txt"] == "active"
     assert status[".ssh/k"] == "active"  # hidden but not a tool cache: kept
+
+
+def test_junk_below_a_hidden_folder_is_recognised() -> None:
+    from apps.media_files.junk import is_under_junk
+
+    assert is_under_junk(".opencode/node_modules/.bin/yaml")
+    assert is_under_junk(".kube/cache/http/abc")
+    assert is_under_junk("node_modules/x.js")
+    assert not is_under_junk(".ssh/id_ed25519")
+    assert not is_under_junk("node_modules")  # a file named like the folder
+    assert not is_under_junk("notes/cache/a.txt")
