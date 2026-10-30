@@ -55,6 +55,13 @@ async def main() -> None:
     for arg in sys.argv[1:-1]:
         if arg.startswith("--crash-after="):
             crash_after = float(arg.split("=", 1)[1])
+        if arg.startswith("--slow-once="):
+            # First run only: never bind (like a plugin on a loaded host);
+            # the marker file makes every later run start normally.
+            marker = arg.split("=", 1)[1]
+            if not os.path.exists(marker):
+                open(marker, "w").close()
+                await asyncio.sleep(60)
 
     if os.path.exists(socket_path):
         os.unlink(socket_path)

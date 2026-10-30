@@ -43,7 +43,11 @@ from apps.user_access_keys.factory import (
 )
 from apps.user_access_keys.routes import router as access_keys_router
 from apps.webdav.routes import router as webdav_router
-from plugins.process_manager import PluginProcessManager, PluginStartError
+from plugins.process_manager import (
+    PluginProcessManager,
+    PluginStartError,
+    PluginUnhealthyError,
+)
 from plugins.registry import PluginRegistry
 from utils.crypto import CredentialCipher
 
@@ -69,18 +73,23 @@ async def _start_plugins(
 
     A plugin that fails to start (e.g. a missing `rclone` binary) is
     logged and skipped, not fatal to the whole app -- one broken provider
-    type shouldn't take down every other one.
+    type shouldn't take down every other one. A plugin that only timed out
+    (a loaded host) keeps retrying in the background: on 2026-10-30 the
+    preview's telegram plugin timed out once at boot and stayed down.
     """
     for process_key in registry.process_ids():
         entrypoint = registry.entrypoint_for(process_key)
         if entrypoint is None:
             continue
+        env = _plugin_env(process_key, settings)
         try:
-            await process_manager.start(
+            await process_manager.start(process_key, entrypoint, env=env)
+        except PluginUnhealthyError:
+            logging.exception(
+                "Plugin '%s' failed to start; retrying in the background",
                 process_key,
-                entrypoint,
-                env=_plugin_env(process_key, settings),
             )
+            process_manager.retry_in_background(process_key, entrypoint, env=env)
         except PluginStartError:
             logging.exception("Plugin '%s' failed to start", process_key)
 
