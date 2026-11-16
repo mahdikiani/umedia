@@ -53,6 +53,7 @@ from utils.crypto import CredentialCipher
 
 from . import config, monitoring
 from .database import create_engine, create_session_factory
+from .error_pages import install_error_pages
 
 
 def _plugin_env(process_key: str, settings: config.Settings) -> dict[str, str]:
@@ -229,6 +230,8 @@ app = app_factory.create_app(
 )
 app.middleware("http")(jwt_guard)
 monitoring.install()
+# Replace the framework catch-all: it put the raw error text in 500 replies.
+install_error_pages(app)
 
 # Off by default: with allow_credentials=True a wildcard-subdomain regex lets
 # every sibling host send credentialed requests. Opt in per deployment.
