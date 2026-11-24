@@ -9,6 +9,7 @@ again 2026-10-28 when the poller reached the connection).
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -192,3 +193,30 @@ async def test_unauthorized_session_is_not_kept() -> None:
             await backend.connect(CONFIG)
     assert client.connected is False
     assert client.connects == 2
+
+
+@pytest.mark.asyncio
+async def test_transport_flood_on_an_idle_client_pauses_the_session() -> None:
+    """Kurigram never raises "429 Transport flood" to the caller: it logs it
+    and restarts the connection in the background, forever. An idle shared
+    client must be closed and the session paused when that log appears."""
+    client = _CountingClient()
+    client.release.set()
+    backend = TelegramBackend()
+    await backend.startup()
+    try:
+        with patch("plugins.telegram.backend.Client", return_value=client):
+            await backend.get_resource(CONFIG, "1")
+            logging.getLogger("pyrogram.session.session").warning(
+                "Server sent transport error: %s (%s)",
+                429,
+                "Transport flood. Please slow down your requests.",
+            )
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert client.connected is False
+            with pytest.raises(tg._TelegramBusyError):
+                await backend.get_resource(CONFIG, "1")
+        assert client.connects == 1
+    finally:
+        await backend.shutdown()
