@@ -201,6 +201,10 @@ class _ClientPool:
                 "Telegram did not answer in time; retry shortly",
             ) from error
 
+    async def drop_all(self, pause_seconds: float) -> None:
+        for key in list(self._clients):
+            await self._drop(key, pause_seconds)
+
     async def close_idle(self) -> None:
         now = _now()
         for key, pooled in list(self._clients.items()):
@@ -213,6 +217,32 @@ class _ClientPool:
         self._clients.clear()
         for pooled in clients:
             await pooled.close()
+
+
+class _TransportFloodWatch(logging.Handler):
+    """Kurigram does not raise "429 Transport flood" to the caller: it logs
+    it and restarts the connection in the background, again and again, even
+    on an idle client. This log line is the only signal, so on it close every
+    shared client and pause their sessions."""
+
+    LOGGER = "pyrogram.session.session"
+
+    def __init__(self, pool: _ClientPool) -> None:
+        super().__init__(logging.WARNING)
+        self._pool = pool
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not record.getMessage().startswith("Server sent transport error: 429"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        logger.warning("Telegram transport flood; closing clients and pausing")
+        task = loop.create_task(self._pool.drop_all(FLOOD_COOLDOWN_SECONDS))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
 
 async def _call(awaitable: Any) -> Any:  # noqa: ANN401
@@ -322,11 +352,14 @@ class TelegramBackend(PluginBackend, TelegramLoginPluginBackend):
         self._login_attempts: dict[str, _LoginAttempt] = {}
         self._login_sweeper: asyncio.Task[None] | None = None
         self._pool = _ClientPool()
+        self._flood_watch = _TransportFloodWatch(self._pool)
 
     async def startup(self) -> None:
+        logging.getLogger(_TransportFloodWatch.LOGGER).addHandler(self._flood_watch)
         self._login_sweeper = asyncio.create_task(self._sweep_login_attempts())
 
     async def shutdown(self) -> None:
+        logging.getLogger(_TransportFloodWatch.LOGGER).removeHandler(self._flood_watch)
         if self._login_sweeper is not None:
             self._login_sweeper.cancel()
             with suppress(asyncio.CancelledError):
