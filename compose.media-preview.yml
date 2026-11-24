@@ -13,6 +13,13 @@
 # to `media`; everything else goes to `web`. This is what lets apps/web's
 # relative `fetch("/api/v1/...")` calls and cookie-based auth work at all
 # -- they assume same-origin, not two separate hosts.
+#
+# PRODUCTION: despite the "preview" name, these containers are the only live
+# umedia (umedia.uln.me). On 2026-11-08 a cleanup took them for a temporary
+# preview and removed them; umedia was down 16 days. Every container carries
+# `role=production` -- never remove a container with that label to free
+# resources. The project name stays as is so the existing data and routes
+# keep working.
 name: umedia-media-preview
 
 services:
@@ -79,6 +86,7 @@ services:
       retries: 5
       start_period: 20s
     labels:
+      - role=production
       - traefik.enable=true
       - traefik.docker.network=traefik-net
       # PathPrefix makes this rule more specific (and so higher-priority
@@ -154,6 +162,7 @@ services:
       retries: 5
       start_period: 20s
     labels:
+      - role=production
       - traefik.enable=true
       - traefik.docker.network=traefik-net
       - traefik.http.routers.umedia-web-preview.rule=Host(`umedia.uln.me`)
