@@ -17,6 +17,8 @@ from usso.exceptions import USSOException
 from usso.lite.dependency import resolve_current_user
 from usso.lite.models import LocalUser
 
+from .usso_mode import SessionUser
+
 # `/f/{uid}` and `/f/{uid}/{filename}` share links: readable without a
 # session so an anonymous recipient can open one -- the route itself
 # enforces the actual gate (the resource's own `public_permission`, see
@@ -87,7 +89,37 @@ def _is_public(request: Request) -> bool:
     )
 
 
-async def resolve_optional_user(request: Request) -> LocalUser | None:
+#: In `UMEDIA_AUTH_MODE=usso` accounts live in USSO, so UMedia's own sign-in,
+#: setup, password and user-admin endpoints do not exist. Only the read-only
+#: "who am I" endpoints stay.
+_USSO_MODE_KEPT_AUTH_PATHS = {
+    "/api/v1/auth/state",
+    "/api/v1/auth/sessions/current",
+}
+
+
+def _is_account_management_path(path: str) -> bool:
+    if path in _USSO_MODE_KEPT_AUTH_PATHS:
+        return False
+    return (
+        path == "/api/v1/auth"
+        or path.startswith("/api/v1/auth/")
+        or path == "/api/v1/users"
+        or path.startswith("/api/v1/users/")
+    )
+
+
+async def resolve_request_user(request: Request) -> SessionUser | LocalUser:
+    """The signed-in user for either auth mode; raises `USSOException`."""
+    authenticator = getattr(request.app.state, "usso_auth", None)
+    if authenticator is not None:
+        return await authenticator.resolve(request)
+    service = request.app.state.auth_service
+    async with service.database.session_maker() as session:
+        return await resolve_current_user(request, session, service.lite_auth)
+
+
+async def resolve_optional_user(request: Request) -> SessionUser | LocalUser | None:
     """The current user, or `None` if there isn't a valid session.
 
     For routes reachable both with and without auth (currently only
@@ -95,12 +127,10 @@ async def resolve_optional_user(request: Request) -> LocalUser | None:
     resolution entirely for public paths, so such a route must resolve it
     itself, same as `/auth/state` already does for the same reason.
     """
-    service = request.app.state.auth_service
-    async with service.database.session_maker() as session:
-        try:
-            return await resolve_current_user(request, session, service.lite_auth)
-        except USSOException:
-            return None
+    try:
+        return await resolve_request_user(request)
+    except USSOException:
+        return None
 
 
 #: Kept as an alias from the single-administrator era; new code should
@@ -145,20 +175,31 @@ async def jwt_guard(request: Request, call_next: object) -> Response:
             },
         )
 
+    if (
+        getattr(request.app.state, "usso_auth", None) is not None
+        and _is_account_management_path(request.url.path)
+    ):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "code": "auth_managed_by_usso",
+                "message": "Accounts are managed by USSO in this installation",
+                "details": {},
+            },
+        )
+
     if not request.url.path.startswith("/api/v1") or _is_public(request):
         return await call_next(request)
 
-    service = request.app.state.auth_service
-    async with service.database.session_maker() as session:
-        try:
-            user = await resolve_current_user(request, session, service.lite_auth)
-        except USSOException:
-            return _unauthorized()
-        request.state.user = user
-        # Compatibility alias from the single-administrator era; new code
-        # should read `request.state.user`.
-        request.state.admin = user
-        return await call_next(request)
+    try:
+        user = await resolve_request_user(request)
+    except USSOException:
+        return _unauthorized()
+    request.state.user = user
+    # Compatibility alias from the single-administrator era; new code
+    # should read `request.state.user`.
+    request.state.admin = user
+    return await call_next(request)
 
 
 def _unauthorized() -> JSONResponse:
